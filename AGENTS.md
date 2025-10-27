@@ -3,6 +3,8 @@
 ## Project Structure & Module Organization
 This dataset repository aggregates multiple vulnerability corpora. `crossvul/` is arranged by CWE then language; each sample is stored as `bad_*` or `good_*` and cross-referenced in `metadata.json`, `generic_messages.list`, and `commits.list`. `cvfixes/CVEFixes.csv` lists CVE metadata sourced from CVEFixes. `devign/` contains `ffmpeg.csv`, `qemu.csv`, and `vulnerables.json` for model training benchmarks. `megavul/` holds the normalized MegaVul dump (prefer editing the uncompressed `megavul/` subfolder; leave the legacy archives untouched). `ReVeal/` provides `function.json` and `non-vulnerables.json`. Root-level CSV/zip files are canonical exports; regenerate them deliberately.
 
+The `cvfixes/` tree ships upstream CVEfixes v1.0.8 under `CVEfixes_v1.0.8/Data/`. When computing CWE statistics we stream the gzipped SQL dump (`CVEfixes_v*.sql.gz`), extract `INSERT INTO cwe_classification` statements, normalise the referenced CWE code, and accumulate counts for the configured target CWEs.
+
 ## Build, Test, and Development Commands
 This is a data-first repository; light-weight validation is expected before every change. Example checks:
 

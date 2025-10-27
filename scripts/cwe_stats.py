@@ -278,6 +278,14 @@ def count_sven(root: Path, targets: set[str]) -> Counter[str]:
 
 
 def count_cvefixes(root: Path, targets: set[str]) -> Counter[str]:
+    """Count CVE→CWE mappings by scanning the CVEfixes SQL dump.
+
+    CVEfixes 1.0.8 is distributed as `Data/CVEfixes_vX.Y.Z.sql.gz`. The dump
+    contains single-row INSERT statements for the `cwe_classification` table,
+    which records the CWE identifier assigned to each CVE. We stream the gzipped
+    SQL file line-by-line, pick out those INSERTs, normalise their CWE payload,
+    and tally the rows that match our target CWE set.
+    """
     sql_path = _locate_latest_cvefixes_sql(root)
     counter: Counter[str] = Counter()
     if not sql_path.exists():
@@ -307,8 +315,11 @@ def _locate_latest_cvefixes_sql(root: Path) -> Path:
     """Find the newest CVEfixes SQL dump available under /cvfixes."""
     base = root / "cvfixes"
     version_pattern = re.compile(r"CVEfixes_v(\d+(?:\.\d+)*)")
-    best_path = base / "CVEfixes_v1.0.7" / "Data" / "CVEfixes_v1.0.7.sql.gz"
+    default_path = base / "CVEfixes_v1.0.8" / "Data" / "CVEfixes_v1.0.8.sql.gz"
+    best_path = default_path
     best_version: tuple[int, ...] | None = None
+    if default_path.exists():
+        best_version = tuple(int(part) for part in "1.0.8".split("."))
 
     if base.exists():
         for entry in base.iterdir():
