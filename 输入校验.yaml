@@ -1,0 +1,53 @@
+category:
+  id: CAT-0002
+  name: 输入校验
+  items:
+    - id: CWD-1044
+      name: 文件名或路径外部可控
+      cwe: CWE-73
+    - id: CWD-1045
+      name: 依赖外部提供文件的文件名或扩展名
+      cwe: CWE-646
+    - id: CWD-1046
+      name: 无限制上传具有危险类型的文件
+      cwe: CWE-434
+    - id: CWD-1047
+      name: 验证框架使用不当
+      cwe: CWE-1173
+      children:
+        - { id: CWD-1048, name: "Struts：表单字段未配置验证器", cwe: CWE-1053 }
+        - { id: CWD-1049, name: "Struts：未启用插件框架", cwe: CWE-106 }
+        - { id: CWD-1050, name: "Struts：Action Form 未验证", cwe: CWE-108 }
+        - { id: CWD-1051, name: "Struts：验证器被禁用", cwe: CWE-109 }
+        - { id: CWD-1052, name: "ASP.NET：未启用输入验证框架", cwe: CWE-554 }
+        - { id: CWD-1053, name: "ASP.NET：模型验证不当", cwe: CWE-1174 }
+        - { id: CWD-1054, name: "WSF：URL 未配置校验规则", cwe: null }
+        - { id: CWD-1055, name: "WSF：dataPattern 配置不当", cwe: null }
+        - { id: CWD-1056, name: "WSF：allParameterCheck 未设置为 true", cwe: null }
+        - { id: CWD-1057, name: "WebView：setSecurityMode 设置不正确", cwe: null }
+        - { id: CWD-1058, name: "supportBackup 配置错误：未置空/false", cwe: null }
+        - { id: CWD-1621, name: "SpringBoot：setUseTrailingSlashMatch 配置不当", cwe: null }
+    - id: CWD-1059
+      name: 路径遍历
+      cwe: CWE-22
+      children:
+        - { id: CWD-1060, name: 相对路径遍历, cwe: CWE-23 }
+        - { id: CWD-1061, name: 绝对路径遍历, cwe: CWE-36 }
+    - id: CWD-1062
+      name: 路径等价解析不当
+      cwe: CWE-41
+    - id: CWD-1063
+      name: 文件访问前链接解析不当（链接跟随）
+      cwe: CWE-59
+    - id: CWD-1064
+      name: Hook 函数的入参验证不当
+      cwe: CWE-622
+    - id: CWD-1065
+      name: 跨站请求伪造（CSRF）
+      cwe: CWE-352
+    - id: CWD-1066
+      name: 服务器请求伪造（SSRF）
+      cwe: CWE-918
+    - id: CWD-1622
+      name: 输入的语法合法性验证不当
+      cwe: CWE-1286

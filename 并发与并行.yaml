@@ -1,0 +1,43 @@
+category:
+  id: CAT-0003
+  name: 并发与并行
+  items:
+    - id: CWD-1116
+      name: 竞争条件
+      cwe: ["CWE-362"]
+      children:
+        - { id: CWD-1117, name: "信号处理例程中发生的竞争条件", cwe: ["CWE-364"] }
+        - { id: CWD-1118, name: "线程内的竞争条件", cwe: ["CWE-366"] }
+        - { id: CWD-1119, name: "检查时间与使用时间（TOCTOU）的竞争条件", cwe: ["CWE-367"] }
+        - { id: CWD-1120, name: "上下文切换竞争条件", cwe: ["CWE-368"] }
+
+    - id: CWD-1121
+      name: 锁定不当
+      cwe: ["CWE-667"]
+      children:
+        - { id: CWD-1122, name: "未受限制的外部可触及的锁", cwe: ["CWE-412"] }
+        - { id: CWD-1123, name: "资源未被正确锁定", cwe: ["CWE-413"] }
+        - { id: CWD-1124, name: "缺少锁定检查", cwe: ["CWE-414"] }
+        - { id: CWD-1125, name: "双重检查锁定", cwe: ["CWE-609"] }
+        - { id: CWD-1126, name: "关键资源的多次锁定", cwe: ["CWE-764"] }
+        - { id: CWD-1127, name: "关键资源的多次解锁", cwe: ["CWE-765"] }
+        - { id: CWD-1128, name: "解锁未锁定的资源", cwe: ["CWE-832"] }
+        - { id: CWD-1129, name: "死锁", cwe: ["CWE-833"] }
+        - { id: CWD-1611, name: "持有锁时执行耗时或阻塞性操作", cwe: [] }
+        - { id: CWD-1623, name: "使用不正确的锁对象类型", cwe: [] }
+
+    - id: CWD-1130
+      name: 缺少同步
+      cwe: ["CWE-820"]
+      children:
+        - { id: CWD-1131, name: "在多线程上下文中使用无同步的单例模式", cwe: ["CWE-543"] }
+        - { id: CWD-1132, name: "在多线程上下文中对共享数据的非同步访问", cwe: ["CWE-567"] }
+        - { id: CWD-1133, name: "创建单例类实例时没有适当的锁定或同步", cwe: ["CWE-1096"] }
+
+    - id: CWD-1134
+      name: 同步不正确
+      cwe: ["CWE-821"]
+      children:
+        - { id: CWD-1135, name: "在同步访问远程资源时未设置超时时间", cwe: ["CWE-1088"] }
+        - { id: CWD-1136, name: "启动线程使用了 run() 而不是 start()", cwe: ["CWE-572"] }
+        - { id: CWD-1137, name: "并发上下文中使用不可重入函数", cwe: ["CWE-663"] }
