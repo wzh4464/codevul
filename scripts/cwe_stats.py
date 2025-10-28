@@ -3,21 +3,27 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
+import logging
 import re
 import sys
 from collections import Counter
 import gzip
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, List, Optional
 
-import pyarrow.ipc as pa_ipc
+try:
+    import pyarrow.ipc as pa_ipc
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    pa_ipc = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CWE_PATTERN = re.compile(r"CWE-(\d+)")
 csv.field_size_limit(sys.maxsize)
+logger = logging.getLogger(__name__)
 
 
 def normalize_cwe(value: object) -> str | None:
@@ -235,6 +241,9 @@ def count_juliet(root: Path, targets: set[str]) -> Counter[str]:
     counter: Counter[str] = Counter()
     if not base.exists():
         return counter
+    if pa_ipc is None:
+        logger.warning("pyarrow is not available; skipping juliet dataset.")
+        return counter
 
     arrow_paths = [
         base / "juliet_test_suite_c_1_3-train.arrow",
@@ -272,6 +281,24 @@ def count_sven(root: Path, targets: set[str]) -> Counter[str]:
             for record in iter_jsonl(jsonl_path):
                 cwes = filter_target(extract_cwes(record.get("vul_type")), targets)
                 for cwe in cwes:
+                    counter[cwe] += 1
+
+    return counter
+
+
+def count_jacontebe(root: Path, targets: set[str]) -> Counter[str]:
+    csv_path = root / "standardized" / "jacontebe.csv"
+    counter: Counter[str] = Counter()
+    if not csv_path.exists():
+        return counter
+
+    with csv_path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            raw = row.get("cwe") or ""
+            for part in raw.split("|"):
+                cwe = normalize_cwe(part)
+                if cwe and cwe in targets:
                     counter[cwe] += 1
 
     return counter
@@ -340,37 +367,99 @@ def _locate_latest_cvefixes_sql(root: Path) -> Path:
     return best_path
 
 
-def main() -> None:
+def _count_empty(root: Path, targets: set[str]) -> Counter[str]:
+    return Counter()
+
+
+DATASET_COUNTERS = {
+    "crossvul": count_crossvul,
+    "jacontebe": count_jacontebe,
+    "megavul": count_megavul,
+    "MSR": count_msr,
+    "primevul": count_primevul,
+    "cvfixes": count_cvefixes,
+    "juliet": count_juliet,
+    "sven": count_sven,
+    "devign": _count_empty,
+    "ReVeal": _count_empty,
+}
+
+DATASET_ALIASES = {name.lower(): name for name in DATASET_COUNTERS}
+
+
+def _normalize_dataset_token(value: str) -> str:
+    return value.strip().lower().rstrip("/")
+
+
+def _resolve_dataset_names(
+    selected: Optional[Iterable[str]],
+) -> List[str]:
+    if not selected:
+        return list(DATASET_COUNTERS)
+
+    tokens: List[str] = []
+    for raw in selected:
+        token = _normalize_dataset_token(raw or "")
+        if not token:
+            continue
+        if token == "all":
+            return list(DATASET_COUNTERS)
+        mapped = DATASET_ALIASES.get(token)
+        if mapped is None:
+            available = ", ".join(sorted(DATASET_COUNTERS))
+            raise ValueError(f"Unknown dataset '{raw}'. Available datasets: {available}")
+        tokens.append(mapped)
+
+    ordered: List[str] = []
+    seen = set()
+    for name in DATASET_COUNTERS:
+        if name in tokens and name not in seen:
+            ordered.append(name)
+            seen.add(name)
+    for name in tokens:
+        if name not in seen:
+            ordered.append(name)
+            seen.add(name)
+
+    if not ordered:
+        available = ", ".join(sorted(DATASET_COUNTERS))
+        raise ValueError(f"No valid datasets selected. Available datasets: {available}")
+
+    return ordered
+
+
+def generate_cwe_stats(
+    selected_datasets: Optional[Iterable[str]] = None,
+    *,
+    quiet: bool = False,
+) -> Optional[dict]:
+    """Compute CWE counts for the requested datasets and write cwe_counts.json."""
     target_cwes = load_target_cwes(ROOT)
     if not target_cwes:
-        print("No target CWE IDs found in collect.json; nothing to do.")
-        return
+        if not quiet:
+            print("No target CWE IDs found in collect.json; nothing to do.")
+        return None
 
+    dataset_names = _resolve_dataset_names(selected_datasets)
     dataset_counters = {
-        "crossvul": count_crossvul(ROOT, target_cwes),
-        "megavul": count_megavul(ROOT, target_cwes),
-        "MSR": count_msr(ROOT, target_cwes),
-        "primevul": count_primevul(ROOT, target_cwes),
-        "cvfixes": count_cvefixes(ROOT, target_cwes),
-        "juliet": count_juliet(ROOT, target_cwes),
-        "sven": count_sven(ROOT, target_cwes),
-        "devign": Counter(),
-        "ReVeal": Counter(),
+        name: DATASET_COUNTERS[name](ROOT, target_cwes) for name in dataset_names
     }
 
     output_path = ROOT / "cwe_counts.json"
     dataset_details = {}
     totals = {}
-    for name, counter in dataset_counters.items():
+    sorted_cwes = sorted(target_cwes)
+    for name in dataset_names:
+        counter = dataset_counters[name]
         total = sum(counter.values())
         totals[name] = total
         dataset_details[name] = {
             "total": total,
-            "per_cwe": {cwe: counter.get(cwe, 0) for cwe in sorted(target_cwes)},
+            "per_cwe": {cwe: counter.get(cwe, 0) for cwe in sorted_cwes},
         }
 
     payload = {
-        "target_cwes": sorted(target_cwes),
+        "target_cwes": sorted_cwes,
         "totals": totals,
         "datasets": dataset_details,
     }
@@ -379,18 +468,51 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    print("Target CWE IDs:", ", ".join(sorted(target_cwes)))
-    for name, counter in dataset_counters.items():
-        total = sum(counter.values())
-        print(f"[{name}] matching samples: {total}")
-        for cwe in sorted(target_cwes):
-            print(f"  {cwe}: {counter.get(cwe, 0)}")
+    if not quiet:
+        print("Target CWE IDs:", ", ".join(sorted_cwes))
+        for name in dataset_names:
+            counter = dataset_counters[name]
+            total = sum(counter.values())
+            print(f"[{name}] matching samples: {total}")
+            for cwe in sorted_cwes:
+                print(f"  {cwe}: {counter.get(cwe, 0)}")
 
-    print("\nDataset totals:")
-    for name, total in totals.items():
-        print(f"  {name}: {total}")
+        print("\nDataset totals:")
+        for name in dataset_names:
+            print(f"  {name}: {totals[name]}")
 
-    print(f"\nDetailed JSON output saved to {output_path.name}")
+        print(f"\nDetailed JSON output saved to {output_path.name}")
+
+    return payload
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--dataset",
+        action="append",
+        dest="datasets",
+        help="Dataset to include (repeat for multiple). Use 'all' to process everything.",
+        metavar="NAME",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress console output; still writes cwe_counts.json.",
+    )
+    return parser
+
+
+def main() -> None:
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+    try:
+        generate_cwe_stats(args.datasets, quiet=args.quiet)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+
+__all__ = ["generate_cwe_stats", "DATASET_COUNTERS"]
 
 
 if __name__ == "__main__":

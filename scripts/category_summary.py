@@ -6,7 +6,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +57,10 @@ def _collect_item_cwes(item: dict) -> List[str]:
     return cwes
 
 
+def _normalize_dataset_token(value: str) -> str:
+    return value.strip().lower().rstrip("/")
+
+
 def _load_collect(
     root: Path,
 ) -> Tuple[
@@ -99,7 +103,9 @@ def _load_counts(root: Path) -> dict:
         return json.load(fh)
 
 
-def generate_category_summary() -> None:
+def generate_category_summary(
+    selected_datasets: Optional[Iterable[str]] = None,
+) -> None:
     """Aggregate CWE counts by second-level category and emit CSV reports."""
     collect_path = ROOT / "collect.json"
     counts_path = ROOT / "cwe_counts.json"
@@ -111,6 +117,7 @@ def generate_category_summary() -> None:
     counts = _load_counts(ROOT)
     desired_order = [
         "crossvul",
+        "jacontebe",
         "megavul",
         "MSR",
         "primevul",
@@ -120,7 +127,50 @@ def generate_category_summary() -> None:
         "devign",
         "ReVeal",
     ]
-    datasets = [name for name in desired_order if name in counts["datasets"]]
+    available_datasets: Dict[str, dict] = counts.get("datasets", {})
+    if not available_datasets:
+        print("No dataset counts available; skip category summary.")
+        return
+
+    alias_map = {name.lower(): name for name in available_datasets}
+
+    def resolve_datasets() -> List[str]:
+        if selected_datasets is None:
+            ordered = [name for name in desired_order if name in available_datasets]
+            for name in available_datasets:
+                if name not in ordered:
+                    ordered.append(name)
+            return ordered
+
+        tokens: List[str] = []
+        for raw in selected_datasets:
+            token = _normalize_dataset_token(raw or "")
+            if not token:
+                continue
+            mapped = alias_map.get(token)
+            if mapped:
+                tokens.append(mapped)
+
+        ordered: List[str] = []
+        seen = set()
+        for name in desired_order:
+            if name in tokens and name not in seen:
+                ordered.append(name)
+                seen.add(name)
+        for name in tokens:
+            if name not in seen and name in available_datasets:
+                ordered.append(name)
+                seen.add(name)
+
+        if not ordered:
+            ordered = [name for name in desired_order if name in available_datasets]
+            for name in available_datasets:
+                if name not in ordered:
+                    ordered.append(name)
+
+        return ordered
+
+    datasets = resolve_datasets()
 
     def build_rows(entries: Iterable[Iterable[object]]) -> Tuple[
         List[List[object]], List[List[object]]
