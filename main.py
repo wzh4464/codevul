@@ -9,6 +9,7 @@ from typing import Dict, Iterable, List, Optional
 
 from scripts.category_summary import generate_category_summary
 from scripts.cwe_stats import DATASET_COUNTERS, generate_cwe_stats
+from scripts.signatures import generate_signatures
 from src.dataset import NORMALIZERS
 
 ROOT = Path(__file__).resolve().parent
@@ -23,6 +24,7 @@ def _build_pipeline_config() -> Dict[str, Dict[str, str]]:
     for name in NORMALIZERS:
         canonical = _canonical_dataset(name)
         config.setdefault(canonical, {})["normalizer"] = name
+        config[canonical]["signature"] = name
     for name in DATASET_COUNTERS:
         canonical = _canonical_dataset(name)
         config.setdefault(canonical, {})["cwe"] = name
@@ -116,6 +118,17 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Always run normalization even if the target CSV already exists.",
     )
+    parser.add_argument(
+        "--signature-dir",
+        default="signatures",
+        help="Directory for generated signature CSVs.",
+        metavar="DIR",
+    )
+    parser.add_argument(
+        "--force-signatures",
+        action="store_true",
+        help="Rebuild signature files even if they already exist.",
+    )
     return parser.parse_args()
 
 
@@ -158,6 +171,33 @@ def _run_normalization(
             )
         else:
             logging.info("Wrote %d rows to %s.", rows_written, output_path)
+
+
+def _run_signatures(
+    dataset_keys: Iterable[str],
+    root: Path,
+    signature_dir: Path,
+    force: bool,
+) -> None:
+    signature_datasets = [
+        PIPELINE_CONFIG[key]["signature"]
+        for key in dataset_keys
+        if "signature" in PIPELINE_CONFIG[key]
+    ]
+    if not signature_datasets:
+        logging.info("No datasets selected for signature generation; skipping.")
+        return
+
+    logging.info(
+        "Generating signatures for: %s",
+        ", ".join(signature_datasets),
+    )
+    generate_signatures(
+        datasets=signature_datasets,
+        root=root,
+        output_dir=signature_dir,
+        force=force,
+    )
 
 
 def _run_cwe_stats(dataset_keys: Iterable[str]) -> Optional[dict]:
@@ -207,6 +247,9 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     if not output_dir.is_absolute():
         output_dir = (root / output_dir).resolve()
+    signature_dir = Path(args.signature_dir)
+    if not signature_dir.is_absolute():
+        signature_dir = (root / signature_dir).resolve()
 
     logging.info(
         "Pipeline start for datasets: %s",
@@ -214,8 +257,10 @@ def main() -> None:
     )
     logging.debug("Repository root: %s", root)
     logging.debug("Output directory: %s", output_dir)
+    logging.debug("Signature directory: %s", signature_dir)
 
     _run_normalization(dataset_keys, root, output_dir, args.limit, args.force_normalize)
+    _run_signatures(dataset_keys, root, signature_dir, args.force_signatures)
     stats_payload = _run_cwe_stats(dataset_keys)
     if stats_payload is not None:
         _run_category_summary(dataset_keys)
