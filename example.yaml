@@ -1,0 +1,22 @@
+- Language: C/C++/Java/....
+    - CWD Number: CWD-1001/CWD-1002/...
+        [
+            - benign_code: {
+                - context: str
+                - class: str
+                - func: str
+            },
+            - vulnerable_code: {
+                - context: str
+                - class: str
+                - func: str
+            }
+            // - vulnerable_lines: list
+            // - context: str // 文件级 context, 可以为 None
+            // - class: str // 如果漏洞是类级别的，将对应的函数代码放在这里，否则为 None
+            // - func: str // 如果漏洞是函数级别的，将对应的函数代码放在这里，否则为 None
+            - CWE: str
+            - source: str // github repo url
+            - commit: str // commit hash
+            - other CWEs(CWDs): list
+        ]
