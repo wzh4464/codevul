@@ -49,23 +49,56 @@ python main.py [options]
   --verbose             Enable DEBUG logging for troubleshooting.
 ```
 
+Data Processing Pipeline
+-----------------------
+The toolkit implements a multi-stage pipeline that transforms raw vulnerability
+datasets into clean, deduplicated benchmarks. See [docs/PIPELINE.md](docs/PIPELINE.md)
+for the complete pipeline documentation.
+
+**Pipeline Stages:**
+1. **Standardization** (`scripts/normalize_datasets.py`) - Convert datasets to unified CSV format
+2. **Signature Generation** (`scripts/signatures.py`) - Create content hashes for deduplication
+3. **Deduplication** (`scripts/clean_duplicates.py`) - Remove duplicate entries
+4. **Benchmark Creation** (`scripts/create_benchmark.py`) - Merge into unified JSON
+5. **Filtering** (`scripts/filter_benchmark.py`) - Select representative samples
+6. **Clustering** (`scripts/cluster_benchmark.py`) - ML-based sample selection
+7. **Analysis** (`scripts/analyze_cwe.py`) - Statistical analysis and reporting
+
 Supporting Scripts
 ------------------
-- `scripts/normalize_datasets.py`: dataset-specific normalizers (mostly invoked
-  via `main.py`).
-- `scripts/signatures.py`: standalone signature generation if required.
-- `scripts/cwe_stats.py`: CWE statistics (used by the pipeline).
-- `scripts/category_summary.py`: category-level aggregation based on
-  `collect.json`.
+
+### Core Pipeline Scripts
+- `scripts/normalize_datasets.py`: Dataset-specific normalizers (invoked via `main.py`)
+- `scripts/signatures.py`: Standalone signature generation
+- `scripts/clean_duplicates.py`: Cross-dataset deduplication
+- `scripts/create_benchmark.py`: Unified benchmark creation
+- `scripts/filter_benchmark.py`: Stratified sample selection (10 per CWE)
+- `scripts/cluster_benchmark.py`: Embedding-based clustering and selection
+
+### Analysis & Statistics
+- `scripts/analyze_cwe.py`: Unified CWE analysis tool
+  - Simple counting mode: `python scripts/analyze_cwe.py input.jsonl`
+  - Detailed analysis: `python scripts/analyze_cwe.py input.jsonl --detailed`
+  - CSV export: `python scripts/analyze_cwe.py input.jsonl -o stats.csv`
+- `scripts/cwe_stats.py`: Comprehensive CWE statistics
+- `scripts/category_summary.py`: Category-level aggregation
+- `scripts/analyze_cwe_stats.py`: Advanced CWE analytics
+
+### Utilities (Deprecated - use scripts/ versions)
+- `scripts/json_to_jsonl.py`: JSON to JSONL conversion
+- `scripts/count_cwe.py`: Simple CWE counting (superseded by `analyze_cwe.py`)
 
 Repository Layout
 -----------------
 - `crossvul/`, `JaConTeBe/`, `megavul/`, etc.: raw dataset sources.
 - `src/dataset/`: normalization modules for each corpus.
 - `src/signature.py`: code canonicalisation and hashing utilities.
+- `src/utils/`: shared utility modules for JSON/CSV I/O, CWE processing, logging, etc.
 - `standardized/`: canonicalised CSV exports.
 - `signatures/`: per-row signature manifests.
+- `clean/`: deduplicated standardized data and signatures.
 - `scripts/`: command-line helpers and analytics.
+- `docs/`: documentation including the complete pipeline guide.
 
 Contributing
 ------------
