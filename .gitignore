@@ -17,3 +17,12 @@ wheels/
 .venv
 *.npy
 .env
+
+# log
+*.log
+
+# plans
+.cursor/plans/
+
+# yaml
+*.yaml
