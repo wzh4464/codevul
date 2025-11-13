@@ -3,10 +3,13 @@ Common utilities for CWE (Common Weakness Enumeration) processing.
 
 This module provides functions for normalizing CWE identifiers, extracting
 CWE numbers, grouping data by CWE, and performing CWE-related analysis.
+Also provides CWE to CWD (Code Weakness Dictionary) mapping functionality.
 """
 
+import json
 import re
 from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 
@@ -57,7 +60,7 @@ def extract_cwe_number(cwe_str: str) -> Optional[int]:
         return None
 
     # Try to match CWE pattern
-    match = re.search(r"(?i)cwe[-_\\s]*(\\d+)", str(cwe_str))
+    match = re.search(r"(?i)cwe[-_\s]*(\d+)", str(cwe_str))
     if match:
         return int(match.group(1))
 
@@ -291,3 +294,142 @@ def filter_by_cwe(
             result.append(item)
 
     return result
+
+
+# ============================================================================
+# CWE to CWD (Code Weakness Dictionary) Mapping
+# ============================================================================
+
+def load_cwd_mapping(collect_json_path: Union[str, Path]) -> Dict[str, List[str]]:
+    """
+    Load CWE to CWD mapping from collect.json file.
+
+    The collect.json file contains a nested structure with categories, items,
+    and children. Each item has an "id" (CWD like "CWD-1044") and a "cwe" array.
+    This function builds a mapping from CWE identifiers to CWD identifiers.
+
+    Args:
+        collect_json_path: Path to collect.json file
+
+    Returns:
+        Dictionary mapping CWE (e.g., "CWE-73") to list of CWDs (e.g., ["CWD-1044"])
+
+    Example:
+        >>> mapping = load_cwd_mapping("collect.json")
+        >>> mapping["CWE-73"]
+        ["CWD-1044"]
+    """
+    with open(collect_json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    cwe_to_cwd = defaultdict(list)
+
+    def process_item(item: Dict[str, Any]) -> None:
+        """Recursively process an item and its children."""
+        cwd_id = item.get('id', '')
+        cwe_list = item.get('cwe', [])
+
+        # Map each CWE in the list to this CWD
+        for cwe in cwe_list:
+            # Normalize CWE format
+            normalized_cwe = normalize_cwe(cwe)
+            if normalized_cwe and normalized_cwe not in ('Unknown', ''):
+                cwe_to_cwd[normalized_cwe].append(cwd_id)
+
+        # Process children recursively
+        children = item.get('children', [])
+        for child in children:
+            process_item(child)
+
+    # Process all categories and their items
+    for category_name, category_data in data.items():
+        items = category_data.get('items', [])
+        for item in items:
+            process_item(item)
+
+    # Convert defaultdict to regular dict
+    return dict(cwe_to_cwd)
+
+
+def get_cwd_for_cwe(cwe: str, cwe_to_cwd_mapping: Dict[str, List[str]]) -> Optional[str]:
+    """
+    Get the primary CWD identifier for a given CWE.
+
+    Args:
+        cwe: CWE identifier (e.g., "CWE-73")
+        cwe_to_cwd_mapping: CWE to CWD mapping from load_cwd_mapping()
+
+    Returns:
+        Primary CWD identifier (first one in the list), or None if not found
+
+    Example:
+        >>> mapping = load_cwd_mapping("collect.json")
+        >>> get_cwd_for_cwe("CWE-73", mapping)
+        "CWD-1044"
+    """
+    normalized_cwe = normalize_cwe(cwe)
+    if not normalized_cwe or normalized_cwe in ('Unknown', ''):
+        return None
+
+    cwd_list = cwe_to_cwd_mapping.get(normalized_cwe, [])
+    return cwd_list[0] if cwd_list else None
+
+
+def get_all_cwds_for_cwe(cwe: str, cwe_to_cwd_mapping: Dict[str, List[str]]) -> List[str]:
+    """
+    Get all CWD identifiers for a given CWE.
+
+    Args:
+        cwe: CWE identifier (e.g., "CWE-73")
+        cwe_to_cwd_mapping: CWE to CWD mapping from load_cwd_mapping()
+
+    Returns:
+        List of CWD identifiers, or empty list if not found
+
+    Example:
+        >>> mapping = load_cwd_mapping("collect.json")
+        >>> get_all_cwds_for_cwe("CWE-73", mapping)
+        ["CWD-1044"]
+    """
+    normalized_cwe = normalize_cwe(cwe)
+    if not normalized_cwe or normalized_cwe in ('Unknown', ''):
+        return []
+
+    return cwe_to_cwd_mapping.get(normalized_cwe, [])
+
+
+def is_unknown_cwe(cwe: str) -> bool:
+    """
+    Check if a CWE identifier is unknown or invalid.
+
+    Args:
+        cwe: CWE identifier to check
+
+    Returns:
+        True if the CWE is unknown/invalid, False otherwise
+
+    Examples:
+        >>> is_unknown_cwe("Unknown")
+        True
+        >>> is_unknown_cwe("UNKNOWN")
+        True
+        >>> is_unknown_cwe("")
+        True
+        >>> is_unknown_cwe("CWE-79")
+        False
+    """
+    if not cwe or cwe is None:
+        return True
+
+    cwe_str = str(cwe).strip()
+
+    # Check for empty string
+    if not cwe_str:
+        return True
+
+    # Check for "Unknown" variants (case-insensitive)
+    if cwe_str.lower() == 'unknown':
+        return True
+
+    # Check if it's a valid CWE number
+    return not is_valid_cwe(cwe_str)

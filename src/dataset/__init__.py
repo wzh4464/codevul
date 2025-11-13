@@ -1,10 +1,9 @@
 """Dataset normalization entrypoints."""
 
-from . import cvfixes, crossvul, jacontebe, juliet, megavul, msr, primevul, sven
+from . import cvfixes, jacontebe, juliet, megavul, msr, primevul, sven
 from .common import SCHEMA
 
 NORMALIZERS = {
-    crossvul.DATASET_NAME: crossvul.normalize,
     cvfixes.DATASET_NAME: cvfixes.normalize,
     jacontebe.DATASET_NAME: jacontebe.normalize,
     juliet.DATASET_NAME: juliet.normalize,
