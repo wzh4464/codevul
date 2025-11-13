@@ -19,13 +19,15 @@
 
 import argparse
 import csv
+import gzip
 import json
 import logging
 import re
+import sqlite3
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 # 配置日志
 logging.basicConfig(
@@ -175,6 +177,160 @@ def extract_structure(code: str, language: str) -> Dict[str, Optional[str]]:
 
 
 # ============================================================================
+# CVE Extraction from CVEfixes
+# ============================================================================
+
+def extract_commit_hash_from_url(commit_url: str) -> Optional[str]:
+    """
+    Extract commit hash from GitHub commit URL.
+
+    Args:
+        commit_url: GitHub commit URL (e.g., https://github.com/user/repo/commit/abc123)
+
+    Returns:
+        Commit hash or None if not found
+    """
+    if not commit_url:
+        return None
+
+    # Pattern: /commit/[hash]
+    match = re.search(r'/commit/([0-9a-f]+)', commit_url)
+    if match:
+        return match.group(1)
+
+    return None
+
+
+def _split_sql_values(payload: str) -> List[str]:
+    """Split the comma-separated value list of an INSERT statement (from cvfixes.py)."""
+    values: List[str] = []
+    current: List[str] = []
+    depth = 0
+    in_string = False
+    i = 0
+    length = len(payload)
+
+    while i < length:
+        ch = payload[i]
+        if in_string:
+            current.append(ch)
+            if ch == "'":
+                if i + 1 < length and payload[i + 1] == "'":
+                    current.append("'")
+                    i += 1
+                else:
+                    in_string = False
+            i += 1
+            continue
+
+        if ch == "'":
+            in_string = True
+            current.append(ch)
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")" and depth:
+            depth -= 1
+        if ch == "," and depth == 0:
+            values.append("".join(current).strip())
+            current.clear()
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+
+    if current:
+        values.append("".join(current).strip())
+    return values
+
+
+def _evaluate_expression(cursor: sqlite3.Cursor, expression: str) -> str:
+    """Evaluate SQL expression (from cvfixes.py)."""
+    expression = expression.strip()
+    if not expression:
+        return ""
+    lowered = expression.lower()
+    if lowered in {"null", "'none'", "'nan'"}:
+        return ""
+    try:
+        cursor.execute(f"SELECT {expression}")
+    except sqlite3.OperationalError:
+        return ""
+    row = cursor.fetchone()
+    value = row[0] if row else ""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    else:
+        value = str(value)
+    if value.lower() in {"none", "nan"}:
+        return ""
+    return value
+
+
+def load_cvefixes_cve_mapping(cvefixes_root: Path) -> Dict[str, str]:
+    """
+    Load commit hash to CVE ID mapping from CVEfixes SQL dump.
+
+    Args:
+        cvefixes_root: Root directory containing cvfixes/CVEfixes_v*/Data/*.sql.gz
+
+    Returns:
+        Dictionary mapping commit hash to primary CVE ID
+    """
+    # Locate SQL dump
+    sql_path = None
+    cvefixes_dir = cvefixes_root / "cvfixes"
+
+    if cvefixes_dir.exists():
+        # Look for CVEfixes_v*.*.*/Data/CVEfixes_v*.*.*.sql.gz
+        for version_dir in sorted(cvefixes_dir.iterdir(), reverse=True):
+            if version_dir.is_dir() and version_dir.name.startswith("CVEfixes_v"):
+                data_dir = version_dir / "Data"
+                if data_dir.exists():
+                    for sql_file in data_dir.glob("*.sql.gz"):
+                        sql_path = sql_file
+                        break
+                if sql_path:
+                    break
+
+    if not sql_path or not sql_path.exists():
+        logger.warning("CVEfixes SQL dump not found, CVE extraction will be skipped")
+        return {}
+
+    logger.info(f"Loading CVE mapping from {sql_path}...")
+
+    commit_to_cves: Dict[str, Set[str]] = defaultdict(set)
+    connection = sqlite3.connect(":memory:")
+    cursor = connection.cursor()
+
+    try:
+        with gzip.open(sql_path, "rt", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                if line.startswith("INSERT INTO fixes"):
+                    values = _split_sql_values(line[line.index("VALUES(") + 7:line.rfind(")")])
+                    if len(values) != 3:
+                        continue
+                    cve_id = _evaluate_expression(cursor, values[0])
+                    commit_hash = _evaluate_expression(cursor, values[1])
+                    if commit_hash and cve_id:
+                        commit_to_cves[commit_hash].add(cve_id)
+    finally:
+        connection.close()
+
+    # Convert to single CVE per commit (take the first one)
+    commit_to_cve = {
+        commit: sorted(cves)[0] if cves else None
+        for commit, cves in commit_to_cves.items()
+    }
+
+    logger.info(f"Loaded CVE mapping for {len(commit_to_cve)} commits")
+    return commit_to_cve
+
+
+# ============================================================================
 # CSV Streaming Reader
 # ============================================================================
 
@@ -182,11 +338,20 @@ def read_standardized_csvs(
     standardized_dir: Path,
     cwe_to_cwd_mapping: Dict[str, List[str]],
     url_cache: Dict[str, Dict[str, any]],
+    commit_to_cve: Dict[str, str],
     validate_urls: bool = True,
     github_token: Optional[str] = None
 ) -> Iterator[Tuple[str, str, Dict[str, Any]]]:
     """
     Stream and filter entries from standardized CSV files.
+
+    Args:
+        standardized_dir: Directory containing standardized CSV files
+        cwe_to_cwd_mapping: CWE to CWD mapping dictionary
+        url_cache: URL validation cache
+        commit_to_cve: Commit hash to CVE ID mapping (from CVEfixes)
+        validate_urls: Whether to validate GitHub URLs
+        github_token: GitHub API token for authentication
 
     Yields tuples of (language, cwd, entry_dict)
     """
@@ -216,7 +381,7 @@ def read_standardized_csvs(
                 total_read += 1
 
                 # Extract fields
-                cwe = row.get('cwe', '').strip()
+                cwe_raw = row.get('cwe', '').strip()
                 code_before = row.get('code_before', '').strip()
                 code_after = row.get('code_after', '').strip()
                 commit_url = row.get('commit_url', '').strip()
@@ -228,20 +393,35 @@ def read_standardized_csvs(
                     filtered_language += 1
                     continue
 
-                # 2. Filter Unknown CWE
-                if is_unknown_cwe(cwe):
+                # 2. Parse pipe-separated CWEs (e.g., "CWE-79|CWE-89|CWE-20")
+                cwe_list = [normalize_cwe(c.strip()) for c in cwe_raw.split('|') if c.strip()]
+                # Filter out Unknown CWEs
+                cwe_list = [c for c in cwe_list if not is_unknown_cwe(c)]
+
+                if not cwe_list:
                     filtered_cwe += 1
                     continue
 
-                # 3. Map CWE to CWD
-                normalized_cwe = normalize_cwe(cwe)
+                # 3. Separate primary CWE and other CWEs
+                normalized_cwe = cwe_list[0]
+                other_cwes = cwe_list[1:] if len(cwe_list) > 1 else []
+
+                # 4. Map primary CWE to CWD
                 cwd = get_cwd_for_cwe(normalized_cwe, cwe_to_cwd_mapping)
 
                 if not cwd:
                     filtered_cwd += 1
                     continue
 
-                # 4. Validate GitHub URL (if enabled)
+                # 5. Map other_CWEs to other_CWDs (exclude primary CWD)
+                other_cwds = []
+                for other_cwe in other_cwes:
+                    other_cwd = get_cwd_for_cwe(other_cwe, cwe_to_cwd_mapping)
+                    # Only include if: 1) CWD exists, 2) not same as primary CWD, 3) not already in list
+                    if other_cwd and other_cwd != cwd and other_cwd not in other_cwds:
+                        other_cwds.append(other_cwd)
+
+                # 6. Validate GitHub URL (if enabled)
                 if validate_urls and commit_url:
                     commit_url_https = ensure_https(commit_url)
                     if commit_url_https and not validate_github_url(
@@ -251,11 +431,18 @@ def read_standardized_csvs(
                         continue
                     commit_url = commit_url_https
 
-                # 5. Extract code structures
+                # 7. Extract code structures
                 benign_structure = extract_structure(code_after, normalized_lang)
                 vulnerable_structure = extract_structure(code_before, normalized_lang)
 
-                # 6. Build entry
+                # 8. Extract CVE ID (if available from CVEfixes)
+                cve_id = None
+                if commit_url:
+                    commit_hash = extract_commit_hash_from_url(commit_url)
+                    if commit_hash:
+                        cve_id = commit_to_cve.get(commit_hash)
+
+                # 9. Build entry
                 entry = {
                     'benign_code': {
                         'context': benign_structure['context'],
@@ -272,8 +459,9 @@ def read_standardized_csvs(
                     'source': dataset_name,  # Original dataset name
                     'commit_url': commit_url if commit_url else None,
                     'CWE': normalized_cwe,
-                    'other_CWEs': [],  # Empty for now
-                    'other_CWDs': []   # Empty for now
+                    'other_CWEs': other_cwes,  # Now populated from pipe-separated CWEs
+                    'other_CWDs': other_cwds,  # Now populated (excluding primary CWD)
+                    'CVE': cve_id  # CVE ID from CVEfixes (None if not available)
                 }
 
                 yielded += 1
@@ -473,6 +661,15 @@ def main():
     url_cache = load_url_cache(args.url_cache)
     logger.info(f"Loaded {len(url_cache)} cached URL validations")
 
+    # Load CVE mapping from CVEfixes
+    logger.info("Loading CVE mapping from CVEfixes...")
+    # Use current working directory as root (where cvfixes/ is located)
+    commit_to_cve = load_cvefixes_cve_mapping(Path.cwd())
+    if commit_to_cve:
+        logger.info(f"Loaded CVE mapping for {len(commit_to_cve)} commits")
+    else:
+        logger.info("CVE mapping not loaded (CVEfixes not available)")
+
     # Stream and group entries by (language, CWD)
     logger.info("Streaming and filtering CSV files...")
     grouped_entries = defaultdict(list)
@@ -489,6 +686,7 @@ def main():
         args.standardized_dir,
         cwe_to_cwd_mapping,
         url_cache,
+        commit_to_cve,
         validate_urls=not args.skip_url_validation,
         github_token=args.github_token
     ):

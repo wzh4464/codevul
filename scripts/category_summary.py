@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Generate per-category CWE summaries from cwe_counts.json."""
+"""Analyze benchmark_transformed.json coverage of collect.json hierarchy."""
 
 from __future__ import annotations
 
-import csv
 import json
+from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Set, Tuple
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,196 +37,206 @@ def _normalize_cwe(value: object) -> str | None:
     return None
 
 
-def _collect_item_cwes(item: dict) -> List[str]:
-    """Gather unique CWE identifiers from an item and its descendants."""
-    cwes: List[str] = []
+def _collect_all_cwds(item: dict, parent_id: str = None) -> List[Tuple[str, str, str]]:
+    """
+    Gather all CWD information from an item and its descendants.
+    Returns list of (cwd_id, cwd_name, parent_cwd_id).
+    """
+    cwds = []
+    cwd_id = item.get("id", "")
+    cwd_name = item.get("name", "")
 
-    def visit(node: dict) -> None:
-        values = node.get("cwe", [])
-        if not isinstance(values, (list, tuple)):
-            values = [values]
-        for raw in values or []:
-            normalized = _normalize_cwe(raw)
-            if normalized and normalized not in cwes:
-                cwes.append(normalized)
-        for child in node.get("children", []) or []:
-            if isinstance(child, dict):
-                visit(child)
+    if cwd_id:
+        cwds.append((cwd_id, cwd_name, parent_id))
 
-    visit(item)
-    return cwes
+    # Recursively collect children
+    for child in item.get("children", []) or []:
+        if isinstance(child, dict):
+            cwds.extend(_collect_all_cwds(child, cwd_id))
 
-
-def _normalize_dataset_token(value: str) -> str:
-    return value.strip().lower().rstrip("/")
+    return cwds
 
 
-def _load_collect(
-    root: Path,
-) -> Tuple[
-    List[Tuple[str, str, List[str]]],
-    List[Tuple[str, str, str, List[str]]],
-]:
-    """Return level-2 and level-3 category mappings from collect.json."""
+def _load_collect_hierarchy(root: Path) -> Dict:
+    """
+    Load collect.json and extract hierarchy structure.
+    Returns dict with:
+    - categories: {cat_name: {id, items: [...]}}
+    - all_cwds: {cwd_id: {name, category, parent_id, level}}
+    """
     collect_path = root / "collect.json"
     with collect_path.open("r", encoding="utf-8") as fh:
         data = json.load(fh)
 
-    level2: List[Tuple[str, str, List[str]]] = []
-    level3: List[Tuple[str, str, str, List[str]]] = []
-    for top_name, category in data.items():
-        items = category.get("items", []) if isinstance(category, dict) else []
+    hierarchy = {
+        "categories": {},
+        "all_cwds": {},
+        "level2_cwds": set(),  # Top-level CWDs (no parent)
+        "level3_cwds": set()   # Child CWDs (have parent)
+    }
+
+    for cat_name, category in data.items():
+        if not isinstance(category, dict):
+            continue
+
+        cat_id = category.get("id", "")
+        hierarchy["categories"][cat_name] = {
+            "id": cat_id,
+            "items": []
+        }
+
+        items = category.get("items", [])
         for item in items:
             if not isinstance(item, dict):
                 continue
-            sub_name = item.get("name")
-            if not sub_name:
-                continue
-            cwes = _collect_item_cwes(item)
-            level2.append((top_name, sub_name, cwes))
 
-            for child in item.get("children", []) or []:
-                if not isinstance(child, dict):
-                    continue
-                child_name = child.get("name")
-                if not child_name:
-                    continue
-                child_cwes = _collect_item_cwes(child)
-                level3.append((top_name, sub_name, child_name, child_cwes))
+            # Collect all CWDs from this item and its children
+            cwds = _collect_all_cwds(item)
+            hierarchy["categories"][cat_name]["items"].extend(cwds)
 
-    return level2, level3
+            for cwd_id, cwd_name, parent_id in cwds:
+                level = 3 if parent_id else 2
+                hierarchy["all_cwds"][cwd_id] = {
+                    "name": cwd_name,
+                    "category": cat_name,
+                    "parent_id": parent_id,
+                    "level": level
+                }
 
+                if level == 2:
+                    hierarchy["level2_cwds"].add(cwd_id)
+                else:
+                    hierarchy["level3_cwds"].add(cwd_id)
 
-def _load_counts(root: Path) -> dict:
-    counts_path = root / "cwe_counts.json"
-    with counts_path.open("r", encoding="utf-8") as fh:
-        return json.load(fh)
+    return hierarchy
 
 
-def generate_category_summary(
-    selected_datasets: Optional[Iterable[str]] = None,
-) -> None:
-    """Aggregate CWE counts by second-level category and emit CSV reports."""
-    collect_path = ROOT / "collect.json"
-    counts_path = ROOT / "cwe_counts.json"
-    if not collect_path.exists() or not counts_path.exists():
-        print("Missing collect.json or cwe_counts.json; skip category summary.")
+def _load_benchmark_stats(root: Path) -> Dict[str, Dict]:
+    """
+    Load benchmark_transformed.json and count entries per CWD.
+    Returns dict: {cwd_id: {count, by_language: {lang: count}}}
+    """
+    benchmark_path = root / "benchmark_transformed.json"
+    if not benchmark_path.exists():
+        print(f"Warning: {benchmark_path} not found")
+        return {}
+
+    with benchmark_path.open("r", encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    stats = defaultdict(lambda: {"count": 0, "by_language": defaultdict(int)})
+
+    for language, cwds in data.items():
+        for cwd_id, entries in cwds.items():
+            count = len(entries)
+            stats[cwd_id]["count"] += count
+            stats[cwd_id]["by_language"][language] += count
+
+    return dict(stats)
+
+
+def generate_category_summary() -> None:
+    """Analyze benchmark_transformed.json coverage of collect.json hierarchy."""
+    print("=" * 80)
+    print("BENCHMARK COVERAGE ANALYSIS")
+    print("=" * 80)
+    print()
+
+    # Load data
+    hierarchy = _load_collect_hierarchy(ROOT)
+    benchmark_stats = _load_benchmark_stats(ROOT)
+
+    if not benchmark_stats:
+        print("Error: No benchmark data found")
         return
 
-    level2_entries, level3_entries = _load_collect(ROOT)
-    counts = _load_counts(ROOT)
-    desired_order = [
-        "crossvul",
-        "jacontebe",
-        "megavul",
-        "MSR",
-        "primevul",
-        "cvfixes",
-        "juliet",
-        "sven",
-        "devign",
-        "ReVeal",
-    ]
-    available_datasets: Dict[str, dict] = counts.get("datasets", {})
-    if not available_datasets:
-        print("No dataset counts available; skip category summary.")
-        return
+    # Calculate coverage statistics
+    total_cwds = len(hierarchy["all_cwds"])
+    level2_total = len(hierarchy["level2_cwds"])
+    level3_total = len(hierarchy["level3_cwds"])
 
-    alias_map = {name.lower(): name for name in available_datasets}
+    covered_cwds = set(benchmark_stats.keys())
+    covered_level2 = covered_cwds & hierarchy["level2_cwds"]
+    covered_level3 = covered_cwds & hierarchy["level3_cwds"]
 
-    def resolve_datasets() -> List[str]:
-        if selected_datasets is None:
-            ordered = [name for name in desired_order if name in available_datasets]
-            for name in available_datasets:
-                if name not in ordered:
-                    ordered.append(name)
-            return ordered
+    # Overall statistics
+    print("📊 OVERALL COVERAGE")
+    print("-" * 80)
+    print(f"Total CWDs in collect.json: {total_cwds}")
+    print(f"  - Level 2 (二级分类): {level2_total}")
+    print(f"  - Level 3 (三级分类): {level3_total}")
+    print()
+    print(f"Covered CWDs in benchmark: {len(covered_cwds)}")
+    print(f"  - Level 2: {len(covered_level2)} / {level2_total} ({len(covered_level2)/level2_total*100:.1f}%)")
+    print(f"  - Level 3: {len(covered_level3)} / {level3_total} ({len(covered_level3)/level3_total*100:.1f}%)")
+    print(f"  - Overall: {len(covered_cwds)} / {total_cwds} ({len(covered_cwds)/total_cwds*100:.1f}%)")
+    print()
 
-        tokens: List[str] = []
-        for raw in selected_datasets:
-            token = _normalize_dataset_token(raw or "")
-            if not token:
-                continue
-            mapped = alias_map.get(token)
-            if mapped:
-                tokens.append(mapped)
+    # Category breakdown
+    print("📋 COVERAGE BY CATEGORY (一级分类)")
+    print("-" * 80)
 
-        ordered: List[str] = []
-        seen = set()
-        for name in desired_order:
-            if name in tokens and name not in seen:
-                ordered.append(name)
-                seen.add(name)
-        for name in tokens:
-            if name not in seen and name in available_datasets:
-                ordered.append(name)
-                seen.add(name)
+    for cat_name, cat_info in hierarchy["categories"].items():
+        cat_cwds = set(cwd_id for cwd_id, _, _ in cat_info["items"])
+        cat_covered = cat_cwds & covered_cwds
+        cat_level2 = cat_cwds & hierarchy["level2_cwds"]
+        cat_level3 = cat_cwds & hierarchy["level3_cwds"]
+        cat_covered_level2 = cat_covered & hierarchy["level2_cwds"]
+        cat_covered_level3 = cat_covered & hierarchy["level3_cwds"]
 
-        if not ordered:
-            ordered = [name for name in desired_order if name in available_datasets]
-            for name in available_datasets:
-                if name not in ordered:
-                    ordered.append(name)
+        total_entries = sum(benchmark_stats.get(cwd, {}).get("count", 0) for cwd in cat_covered)
 
-        return ordered
+        print(f"\n{cat_name} ({cat_info['id']})")
+        print(f"  Total CWDs: {len(cat_cwds)} (Level 2: {len(cat_level2)}, Level 3: {len(cat_level3)})")
+        print(f"  Covered: {len(cat_covered)} / {len(cat_cwds)} ({len(cat_covered)/len(cat_cwds)*100:.1f}%)")
+        print(f"    - Level 2: {len(cat_covered_level2)} / {len(cat_level2)} ({len(cat_covered_level2)/len(cat_level2)*100:.1f}%)" if cat_level2 else "    - Level 2: N/A")
+        print(f"    - Level 3: {len(cat_covered_level3)} / {len(cat_level3)} ({len(cat_covered_level3)/len(cat_level3)*100:.1f}%)" if cat_level3 else "    - Level 3: N/A")
+        print(f"  Total examples: {total_entries}")
 
-    datasets = resolve_datasets()
+    # Detailed CWD breakdown
+    print()
+    print("=" * 80)
+    print("📝 DETAILED CWD BREAKDOWN")
+    print("=" * 80)
 
-    def build_rows(entries: Iterable[Iterable[object]]) -> Tuple[
-        List[List[object]], List[List[object]]
-    ]:
-        summary_rows: List[List[object]] = []
-        zero_rows: List[List[object]] = []
-        for entry in entries:
-            *labels, cwes = entry
-            per_dataset: List[int] = []
-            for dataset in datasets:
-                per_cwe: Dict[str, int] = counts["datasets"][dataset]["per_cwe"]
-                per_dataset.append(sum(per_cwe.get(cwe, 0) for cwe in cwes))
-            total = sum(per_dataset)
-            summary_rows.append([*labels, total, *per_dataset])
-            if total == 0:
-                zero_rows.append(list(labels))
-        return summary_rows, zero_rows
+    for cat_name, cat_info in hierarchy["categories"].items():
+        print(f"\n{'=' * 80}")
+        print(f"{cat_name} ({cat_info['id']})")
+        print(f"{'=' * 80}")
 
-    level2_rows, level2_zero = build_rows(level2_entries)
-    level3_rows, level3_zero = build_rows(level3_entries)
+        # Group by level
+        level2_cwds_in_cat = []
+        level3_cwds_in_cat = defaultdict(list)
 
-    level2_summary_path = ROOT / "category_summary_level2.csv"
-    level2_zero_path = ROOT / "category_summary_level2_zero.csv"
-    level3_summary_path = ROOT / "category_summary_level3.csv"
-    level3_zero_path = ROOT / "category_summary_level3_zero.csv"
+        for cwd_id, cwd_name, parent_id in cat_info["items"]:
+            info = hierarchy["all_cwds"][cwd_id]
+            count = benchmark_stats.get(cwd_id, {}).get("count", 0)
+            by_lang = benchmark_stats.get(cwd_id, {}).get("by_language", {})
 
-    level2_header = ["一级分类", "二级分类", "total", *datasets]
-    with level2_summary_path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(level2_header)
-        writer.writerows(level2_rows)
+            if info["level"] == 2:
+                level2_cwds_in_cat.append((cwd_id, cwd_name, count, by_lang))
+            else:
+                level3_cwds_in_cat[parent_id].append((cwd_id, cwd_name, count, by_lang))
 
-    with level2_zero_path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(["一级分类", "二级分类"])
-        writer.writerows(level2_zero)
+        # Print level 2 CWDs
+        for cwd_id, cwd_name, count, by_lang in level2_cwds_in_cat:
+            status = "✅" if count > 0 else "❌"
+            lang_info = ", ".join(f"{lang}: {c}" for lang, c in by_lang.items()) if by_lang else "N/A"
+            print(f"\n  {status} {cwd_id} - {cwd_name}")
+            print(f"     Examples: {count} ({lang_info})")
 
-    level3_header = ["一级分类", "二级分类", "三级分类", "total", *datasets]
-    with level3_summary_path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(level3_header)
-        writer.writerows(level3_rows)
+            # Print children if any
+            if cwd_id in level3_cwds_in_cat:
+                for child_id, child_name, child_count, child_lang in level3_cwds_in_cat[cwd_id]:
+                    child_status = "✅" if child_count > 0 else "❌"
+                    child_lang_info = ", ".join(f"{lang}: {c}" for lang, c in child_lang.items()) if child_lang else "N/A"
+                    print(f"    {child_status} {child_id} - {child_name}")
+                    print(f"       Examples: {child_count} ({child_lang_info})")
 
-    with level3_zero_path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(["一级分类", "二级分类", "三级分类"])
-        writer.writerows(level3_zero)
-
-    print(
-        f"Level-2 summary written to {level2_summary_path.name} "
-        f"({len(level2_rows)} rows, {len(level2_zero)} zero categories)."
-    )
-    print(
-        f"Level-3 summary written to {level3_summary_path.name} "
-        f"({len(level3_rows)} rows, {len(level3_zero)} zero categories)."
-    )
+    print()
+    print("=" * 80)
+    print("✅ Analysis complete!")
+    print("=" * 80)
 
 
 if __name__ == "__main__":
