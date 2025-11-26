@@ -131,7 +131,7 @@ The pipeline processes multiple vulnerability datasets (CrossVul, CVEfixes, Mega
 - **PrimeVul**: Primary vulnerability dataset
 - **SVEN**: Secure VulNerability dataset
 
-**Location:** `crossvul/`, `cvfixes/`, `megavul/`, etc.
+**Location:** `crossvul/`, `cvefixes/`, `megavul/`, etc.
 
 ### Stage 2: Standardization
 

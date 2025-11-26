@@ -339,8 +339,8 @@ def count_cvefixes(root: Path, targets: set[str]) -> Counter[str]:
 
 
 def _locate_latest_cvefixes_sql(root: Path) -> Path:
-    """Find the newest CVEfixes SQL dump available under /cvfixes."""
-    base = root / "cvfixes"
+    """Find the newest CVEfixes SQL dump available under /cvefixes."""
+    base = root / "cvefixes"
     version_pattern = re.compile(r"CVEfixes_v(\d+(?:\.\d+)*)")
     default_path = base / "CVEfixes_v1.0.8" / "Data" / "CVEfixes_v1.0.8.sql.gz"
     best_path = default_path
@@ -377,7 +377,7 @@ DATASET_COUNTERS = {
     "megavul": count_megavul,
     "MSR": count_msr,
     "primevul": count_primevul,
-    "cvfixes": count_cvefixes,
+    "cvefixes": count_cvefixes,
     "juliet": count_juliet,
     "sven": count_sven,
     "devign": _count_empty,

@@ -9,6 +9,11 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
+# Add src to path to allow importing CodeOptimizer
+sys.path.append(str(Path(__file__).parent.parent / 'src'))
+from review.code_optimizer import CodeOptimizer
+
+
 # Increase CSV field size limit
 csv.field_size_limit(sys.maxsize)
 
@@ -138,11 +143,15 @@ def merge_benchmarks(
 def create_benchmark_json(
     standardized_dir: Path,
     output_path: Path,
+    optimize: bool = False,
 ) -> None:
     """Create benchmark.json from all standardized CSV files."""
     logging.info("Starting benchmark.json creation")
+    if optimize:
+        logging.info("Code optimization is ENABLED")
 
     benchmark: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    optimizer = CodeOptimizer() if optimize else None
 
     # Process all CSV files in standardized directory
     csv_files = sorted(standardized_dir.glob('*.csv'))
@@ -153,24 +162,6 @@ def create_benchmark_json(
 
     logging.info(f"Found {len(csv_files)} CSV files to process")
 
-    for csv_file in csv_files:
-        entries = process_csv_file(csv_file)
-
-        if not entries:
-            logging.warning(f"No entries extracted from {csv_file.name}")
-            continue
-
-        # Group entries by language
-        entries_by_lang: Dict[str, List[Dict[str, Any]]] = {}
-        for entry in entries:
-            # We need to read the CSV again to get the language field
-            # Let's optimize this by storing language in the entry
-            pass
-
-        # Actually, we need to modify the approach to include language
-        # Let me refactor this
-
-    # Let's use a different approach - process each CSV with its language info
     for csv_file in csv_files:
         logging.info(f"Processing {csv_file.name}...")
 
@@ -183,6 +174,20 @@ def create_benchmark_json(
                     row_count += 1
                     language = row.get('language', 'Unknown')
                     entry = create_benchmark_entry(row, csv_file.stem)
+
+                    if optimizer:
+                        code_before = row.get('code_before', '')
+                        code_after = row.get('code_after', '')
+                        result = optimizer.optimize_code_pair(code_before, code_after)
+                        if result.get('optimized'):
+                            entry['vulnerable_lines'] = result['vulnerable_code']
+                            entry['benign_lines'] = result['benign_code']
+                            entry['_optimization'] = {
+                                'enabled': True,
+                                'reduction_ratio': result.get('reduction_ratio'),
+                                'original_size': result.get('original_size'),
+                                'optimized_size': result.get('optimized_size'),
+                            }
 
                     # Organize by language and CWE
                     organized = organize_by_language_and_cwe([entry], language)
@@ -230,6 +235,11 @@ def main() -> None:
         default=Path('benchmark.json'),
         help='Output path for benchmark.json',
     )
+    parser.add_argument(
+        '--optimize',
+        action='store_true',
+        help='Enable code optimization to reduce benchmark size.',
+    )
 
     args = parser.parse_args()
 
@@ -237,7 +247,7 @@ def main() -> None:
         logging.error(f"Directory not found: {args.standardized_dir}")
         return
 
-    create_benchmark_json(args.standardized_dir, args.output)
+    create_benchmark_json(args.standardized_dir, args.output, args.optimize)
 
 
 if __name__ == '__main__':

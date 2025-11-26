@@ -202,7 +202,7 @@ def extract_commit_hash_from_url(commit_url: str) -> Optional[str]:
 
 
 def _split_sql_values(payload: str) -> List[str]:
-    """Split the comma-separated value list of an INSERT statement (from cvfixes.py)."""
+    """Split the comma-separated value list of an INSERT statement (from cvefixes.py)."""
     values: List[str] = []
     current: List[str] = []
     depth = 0
@@ -246,7 +246,7 @@ def _split_sql_values(payload: str) -> List[str]:
 
 
 def _evaluate_expression(cursor: sqlite3.Cursor, expression: str) -> str:
-    """Evaluate SQL expression (from cvfixes.py)."""
+    """Evaluate SQL expression (from cvefixes.py)."""
     expression = expression.strip()
     if not expression:
         return ""
@@ -275,14 +275,14 @@ def load_cvefixes_cve_mapping(cvefixes_root: Path) -> Dict[str, str]:
     Load commit hash to CVE ID mapping from CVEfixes SQL dump.
 
     Args:
-        cvefixes_root: Root directory containing cvfixes/CVEfixes_v*/Data/*.sql.gz
+        cvefixes_root: Root directory containing cvefixes/CVEfixes_v*/Data/*.sql.gz
 
     Returns:
         Dictionary mapping commit hash to primary CVE ID
     """
     # Locate SQL dump
     sql_path = None
-    cvefixes_dir = cvefixes_root / "cvfixes"
+    cvefixes_dir = cvefixes_root / "cvefixes"
 
     if cvefixes_dir.exists():
         # Look for CVEfixes_v*.*.*/Data/CVEfixes_v*.*.*.sql.gz
@@ -663,7 +663,7 @@ def main():
 
     # Load CVE mapping from CVEfixes
     logger.info("Loading CVE mapping from CVEfixes...")
-    # Use current working directory as root (where cvfixes/ is located)
+    # Use current working directory as root (where cvefixes/ is located)
     commit_to_cve = load_cvefixes_cve_mapping(Path.cwd())
     if commit_to_cve:
         logger.info(f"Loaded CVE mapping for {len(commit_to_cve)} commits")
