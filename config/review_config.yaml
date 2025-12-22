@@ -1,0 +1,100 @@
+# Review Comment Generation Configuration
+
+llm:
+  primary:
+    # Uses META_MODEL_NAME from .env: claude-sonnet-4-5-20250929-thinking
+    model: null  # Will use env var META_MODEL_NAME
+    temperature: 0.1
+    max_tokens: 2500
+  fallback:
+    # Uses MODEL_NAME from .env: gpt-4o
+    model: null  # Will use env var MODEL_NAME
+    temperature: 0.1
+    max_tokens: 2000
+  rate_limiting:
+    max_concurrent: 16  # Concurrent API requests
+    retry_delay: 1.0
+    max_retries: 3
+    exponential_backoff: true
+
+processing:
+  parallel_workers: 16  # Parallel processing threads (increased for faster processing)
+  batch_size: 10  # Process in batches
+  checkpoint_frequency: 10  # Save progress every N entries (reduced for more frequent saves)
+  cache_dir: "review_cache"
+  progress_file: "review_progress.json"
+  enable_multi_pass: true  # Regenerate low-confidence reviews
+  confidence_threshold: 0.75  # Minimum confidence to accept
+  max_regeneration_attempts: 2  # Max times to retry low-confidence
+  streaming_output: true  # Write results immediately as they complete
+  output_file: "benchmark_with_reviews.json"  # Output file path
+
+validation:
+  min_confidence_threshold: 0.6  # Absolute minimum
+  required_fields:
+    vulnerability_analysis:
+      - summary
+      - severity
+      - root_cause
+      - attack_vector
+      - cwe_explanation
+    fix_analysis:
+      - summary
+      - changes_made
+      - fix_quality
+      - completeness
+    code_review:
+      - security_improvements
+      - remaining_concerns
+      - best_practices
+
+  allowed_values:
+    severity:
+      - LOW
+      - MEDIUM
+      - HIGH
+      - CRITICAL
+    fix_quality:
+      - POOR
+      - FAIR
+      - GOOD
+      - EXCELLENT
+    completeness:
+      - INCOMPLETE
+      - PARTIAL
+      - COMPLETE
+      - COMPREHENSIVE
+
+  confidence_weights:
+    json_valid: 0.25
+    all_fields_present: 0.20
+    cwe_mentioned: 0.15
+    line_numbers_valid: 0.10
+    reasonable_length: 0.10
+    no_generic_response: 0.10
+    severity_appropriate: 0.10
+
+enrichment:
+  fetch_cwe_descriptions: true
+  cwe_database_path: "collect.json"
+  include_commit_context: true
+  max_code_context_lines: 100
+
+output:
+  format: "json"  # json or jsonl
+  pretty_print: true
+  include_metadata: true
+  save_intermediate: false  # Save after each stage
+
+human_review:
+  enabled: true
+  sample_rate: 0.05  # 5% of reviews
+  stratify_by:
+    - severity
+    - cwe
+  output_file: "human_review_samples.json"
+
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "review_generation.log"
+  console: true

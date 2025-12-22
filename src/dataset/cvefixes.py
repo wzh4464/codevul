@@ -170,7 +170,7 @@ def _generate_rows(db_path: Path) -> Iterator[List[str]]:
             fc.programming_language,
             fc.code_before,
             fc.code_after,
-            GROUP_CONCAT(DISTINCT wc.cwe_id, '|') as cwes
+            GROUP_CONCAT(DISTINCT wc.cwe_id) as cwes
         FROM file_change fc
         LEFT JOIN fixes fx ON fc.hash = fx.hash
         LEFT JOIN cwe_classification wc ON fx.cve_id = wc.cve_id
@@ -208,7 +208,8 @@ def _generate_rows(db_path: Path) -> Iterator[List[str]]:
             # Normalize CWEs
             cwe_list = []
             if cwes:
-                for cwe_raw in cwes.split("|"):
+                # GROUP_CONCAT uses comma separator by default
+                for cwe_raw in cwes.split(","):
                     cwe = normalize_cwe(cwe_raw)
                     if cwe:
                         cwe_list.append(cwe)

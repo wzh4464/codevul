@@ -1,114 +1,205 @@
-CodeVul Dataset Toolkit
-=======================
+# CodeVul Benchmark Pipeline
 
-This repository curates multiple open-source vulnerability corpora and provides
-tooling to normalise, deduplicate, and analyse them in a consistent format. The
-primary datasets include CrossVul, JaConTeBe, MegaVul, MSR, PrimeVul, SVEN, and
-several auxiliary benchmarks. Normalised exports power downstream research,
-while signature and statistics reports support quality checks and curation.
+A modular pipeline for processing vulnerability datasets and generating standardized benchmarks.
 
-Features
---------
-- Canonical CSV exports produced from heterogeneous dataset formats.
-- Deterministic per-sample signatures for duplicate detection.
-- CWE coverage statistics and category roll-ups derived from `collect.json`.
-- Single-entry CLI (`python main.py`) that orchestrates the full pipeline.
+## Quick Start
 
-Environment
------------
-- Python 3.12+ (managed with `uv venv` in this repository).
-- Dataset-specific dependencies are kept minimal; optional `pyarrow` enables
-  Juliet statistics.
+```bash
+# Install dependencies
+uv sync
 
-Quick Start
------------
-1. Activate the virtual environment (once created via `uv venv`):
-   ```bash
-   source .venv/bin/activate
-   ```
-2. Normalize, deduplicate, and compute stats for all datasets:
-   ```bash
-   python main.py --dataset all
-   ```
-   Add `--force-normalize` or `--force-signatures` to rebuild existing outputs.
-3. Inspect generated artifacts:
-   - Normalised CSVs in `standardized/`.
-   - Signature manifests in `signatures/`.
-   - CWE counts in `cwe_counts.json`.
-   - Category summaries in `category_summary_level*.csv`.
+# Run complete pipeline
+python run.py pipeline
 
-CLI Reference
--------------
-```
-python main.py [options]
-  --dataset NAME        Target dataset(s); repeatable. Use "all" for every dataset.
-  --limit N             Cap the number of rows emitted during normalization.
-  --signature-dir DIR   Destination for signature CSVs (default: signatures/).
-  --force-normalize     Rebuild normalized CSVs even if they already exist.
-  --force-signatures    Rebuild signature CSVs even if they already exist.
-  --verbose             Enable DEBUG logging for troubleshooting.
+# Or run individual steps
+python run.py normalize --dataset juliet --limit 100
+python run.py clean
+python run.py transform
+python run.py sample
 ```
 
-Data Processing Pipeline
------------------------
-The toolkit implements a multi-stage pipeline that transforms raw vulnerability
-datasets into clean, deduplicated benchmarks. See [docs/PIPELINE.md](docs/PIPELINE.md)
-for the complete pipeline documentation.
+## Directory Structure
 
-**Pipeline Stages:**
-1. **Standardization** (`scripts/normalize_datasets.py`) - Convert datasets to unified CSV format
-2. **Signature Generation** (`scripts/signatures.py`) - Create content hashes for deduplication
-3. **Deduplication** (`scripts/clean_duplicates.py`) - Remove duplicate entries
-4. **Benchmark Creation** (`scripts/create_benchmark.py`) - Merge into unified JSON
-5. **Filtering** (`scripts/filter_benchmark.py`) - Select representative samples
-6. **Clustering** (`scripts/cluster_benchmark.py`) - ML-based sample selection
-7. **Analysis** (`scripts/analyze_cwe.py`) - Statistical analysis and reporting
+```
+├── config/pipeline.yaml  # Configuration
+├── datasets/             # Raw data (gitignored)
+├── results/              # Pipeline outputs (gitignored)
+│   ├── normalized/       # Step 1: Standardized CSVs
+│   ├── cleaned/          # Step 2: Filtered CSVs
+│   ├── benchmark/        # Step 3: benchmark.json
+│   └── samples/          # Step 4: Sample files
+├── src/                  # Source modules
+│   ├── cleaning/         # Filtering steps
+│   ├── dataset/          # Dataset normalizers
+│   ├── pipeline/         # Orchestration
+│   └── transform/        # Transformation logic
+├── scripts/              # One-off utilities
+└── run.py                # Main entry point
+```
 
-Supporting Scripts
-------------------
+## Pipeline Stages
 
-### Core Pipeline Scripts
-- `scripts/normalize_datasets.py`: Dataset-specific normalizers (invoked via `main.py`)
-- `scripts/signatures.py`: Standalone signature generation
-- `scripts/clean_duplicates.py`: Cross-dataset deduplication
-- `scripts/create_benchmark.py`: Unified benchmark creation
-- `scripts/filter_benchmark.py`: Stratified sample selection (10 per CWE)
-- `scripts/cluster_benchmark.py`: Embedding-based clustering and selection
+### 1. Normalize
+Convert raw datasets to standard CSV (cwe, code_before, code_after, commit_url, language)
 
-### Analysis & Statistics
-- `scripts/analyze_cwe.py`: Unified CWE analysis tool
-  - Simple counting mode: `python scripts/analyze_cwe.py input.jsonl`
-  - Detailed analysis: `python scripts/analyze_cwe.py input.jsonl --detailed`
-  - CSV export: `python scripts/analyze_cwe.py input.jsonl -o stats.csv`
-- `scripts/cwe_stats.py`: Comprehensive CWE statistics
-- `scripts/category_summary.py`: Category-level aggregation
-- `scripts/analyze_cwe_stats.py`: Advanced CWE analytics
+### 2. Clean
+Apply mandatory filters:
+- Language (C/C++, Java only)
+- CWE validation
+- Code validation (non-empty, different before/after)
+- URL validation (optional)
+- Deduplication (placeholder)
 
-### Utilities (Deprecated - use scripts/ versions)
-- `scripts/json_to_jsonl.py`: JSON to JSONL conversion
-- `scripts/count_cwe.py`: Simple CWE counting (superseded by `analyze_cwe.py`)
+### 3. Transform
+- Map CWE → CWD (Code Weakness Dictionary)
+- Extract code structure (class/function names)
+- Extract CVE IDs from CVEfixes
+- Apply clustering for large groups (>300 entries)
+- Generate benchmark.json
 
-Repository Layout
------------------
-- `crossvul/`, `JaConTeBe/`, `megavul/`, etc.: raw dataset sources.
-- `src/dataset/`: normalization modules for each corpus.
-- `src/signature.py`: code canonicalisation and hashing utilities.
-- `src/utils/`: shared utility modules for JSON/CSV I/O, CWE processing, logging, etc.
-- `standardized/`: canonicalised CSV exports.
-- `signatures/`: per-row signature manifests.
-- `clean/`: deduplicated standardized data and signatures.
-- `scripts/`: command-line helpers and analytics.
-- `docs/`: documentation including the complete pipeline guide.
+### 4. Sample
+Generate one sample per dataset for inspection
 
-Contributing
-------------
-Follow the dataset naming and metadata conventions outlined in
-`user_instructions`. When adding new samples:
-- Update the corresponding dataset manifest (e.g., `crossvul/metadata.json`).
-- Regenerate the affected normalized CSV and signature files via `main.py`.
-- Refresh statistics and summaries to keep downstream analyses in sync.
+## Configuration
 
-License
--------
-This repository aggregates datasets with their respective upstream licenses.
-Refer to each dataset directory for attribution details.
+Edit `config/pipeline.yaml`:
+
+```yaml
+datasets:
+  active:
+    - cvefixes
+    - juliet
+    - msr
+    - megavul
+    - primevul
+    - sven
+    - jacontebe
+
+pipeline:
+  clean:
+    language_filter:
+      allowed: ['c/c++', 'java']
+  
+  transform:
+    clustering:
+      max_samples_per_group: 300
+      method: 'kmeans'  # or 'stratified'
+```
+
+## Commands
+
+```bash
+# Normalize specific dataset
+python run.py normalize --dataset cvefixes --limit 1000
+
+# Clean all normalized data
+python run.py clean
+
+# Transform to benchmark
+python run.py transform
+
+# Generate samples
+python run.py sample
+
+# Run everything
+python run.py pipeline --limit 500
+```
+
+## Output Format
+
+### Benchmark JSON
+
+```json
+{
+  "c/c++": {
+    "CWD-1059": [
+      {
+        "benign_code": {
+          "context": "fixed code",
+          "class": "ClassName",
+          "func": "function code"
+        },
+        "vulnerable_code": {
+          "context": "vulnerable code",
+          "class": "ClassName",
+          "func": "function code"
+        },
+        "source": "dataset_name",
+        "commit_url": "https://github.com/...",
+        "CWE": "CWE-22",
+        "other_CWEs": [],
+        "other_CWDs": [],
+        "CVE": "CVE-2023-12345"
+      }
+    ]
+  }
+}
+```
+
+## Key Features
+
+- **Modular**: Each stage is independent
+- **Configurable**: All settings in YAML
+- **Scalable**: Streaming processing, parallel normalization
+- **Quality**: Multiple validation layers
+- **Reproducible**: Consistent output format
+
+## Common Issues
+
+### CWE Not Mapping
+Ensure CWE format is correct. Pipeline normalizes:
+- `cwe-022` → `CWE-22`
+- Leading zeros removed
+
+### All Data Filtered
+Check language field is set to `c`, `c++`, `cpp`, or `java`
+
+### CVE Extraction Skipped
+Ensure CVEfixes dataset exists at `datasets/cvefixes/CVEfixes_v*/Data/*.sql.gz`
+
+## Development
+
+### Adding a Dataset
+
+1. Create normalizer in `src/dataset/your_dataset.py`
+2. Register in `src/dataset/__init__.py`: `NORMALIZERS['your_dataset'] = normalize_your_dataset`
+3. Add to `config/pipeline.yaml`
+
+### Adding a Cleaning Step
+
+1. Create class in `src/cleaning/your_step.py` extending `CleaningStep`
+2. Add to pipeline in `src/pipeline/clean.py`
+
+## Environment
+
+```bash
+# Optional: GitHub token for URL validation
+export GITHUB_TOKEN=your_token_here
+```
+
+## Performance
+
+Typical times (varies by hardware/dataset size):
+- Normalize: 1-30 min/dataset
+- Clean: 1-5 min
+- Transform: 1-5 min (+ CVEfixes parsing)
+- Sample: <1 sec
+
+## Troubleshooting
+
+```bash
+# Check logs
+tail -f results/pipeline.log
+
+# Validate outputs
+wc -l results/cleaned/*.csv
+python -c "import json; print(list(json.load(open('results/benchmark/benchmark.json')).keys()))"
+
+# Reset
+rm -rf results/
+python run.py pipeline
+```
+
+## Old README
+
+Previous documentation backed up to `README.old.md`

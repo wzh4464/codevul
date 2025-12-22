@@ -19,6 +19,7 @@
 
 import argparse
 import csv
+import difflib
 import gzip
 import json
 import logging
@@ -177,6 +178,57 @@ def extract_structure(code: str, language: str) -> Dict[str, Optional[str]]:
 
 
 # ============================================================================
+# Diff Lines Extraction
+# ============================================================================
+
+def extract_diff_lines(
+    code_before: str,
+    code_after: str,
+    context: int = 2
+) -> Tuple[List[List[str]], List[List[str]]]:
+    """
+    Extract diff hunks with context lines.
+
+    Args:
+        code_before: Vulnerable code (original)
+        code_after: Benign code (fixed)
+        context: Number of context lines before and after each hunk
+
+    Returns:
+        Tuple of (benign_lines, vulnerable_lines) where each is a list of hunks,
+        and each hunk is a list of code lines.
+    """
+    if not code_before or not code_after:
+        return [], []
+
+    lines_before = code_before.splitlines()
+    lines_after = code_after.splitlines()
+
+    matcher = difflib.SequenceMatcher(None, lines_before, lines_after)
+
+    benign_hunks = []
+    vulnerable_hunks = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == 'equal':
+            continue
+
+        # Extract vulnerable code hunk (from code_before) with context
+        start_v = max(0, i1 - context)
+        end_v = min(len(lines_before), i2 + context)
+        if end_v > start_v:
+            vulnerable_hunks.append(lines_before[start_v:end_v])
+
+        # Extract benign code hunk (from code_after) with context
+        start_b = max(0, j1 - context)
+        end_b = min(len(lines_after), j2 + context)
+        if end_b > start_b:
+            benign_hunks.append(lines_after[start_b:end_b])
+
+    return benign_hunks, vulnerable_hunks
+
+
+# ============================================================================
 # CVE Extraction from CVEfixes
 # ============================================================================
 
@@ -270,31 +322,39 @@ def _evaluate_expression(cursor: sqlite3.Cursor, expression: str) -> str:
     return value
 
 
-def load_cvefixes_cve_mapping(cvefixes_root: Path) -> Dict[str, str]:
+def load_cvefixes_cve_mapping(cvefixes_root: Path) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
     """
-    Load commit hash to CVE ID mapping from CVEfixes SQL dump.
+    Load commit hash to CVE ID and description mapping from CVEfixes SQL dump.
 
     Args:
         cvefixes_root: Root directory containing cvefixes/CVEfixes_v*/Data/*.sql.gz
 
     Returns:
-        Dictionary mapping commit hash to primary CVE ID
+        Dictionary mapping commit hash to (cve_id, description) tuple
     """
-    # Locate SQL dump
+    # Locate SQL dump - check multiple possible locations
     sql_path = None
-    cvefixes_dir = cvefixes_root / "cvefixes"
+    possible_dirs = [
+        cvefixes_root / "cvefixes",
+        cvefixes_root / "datasets" / "cvefixes",
+    ]
 
-    if cvefixes_dir.exists():
-        # Look for CVEfixes_v*.*.*/Data/CVEfixes_v*.*.*.sql.gz
-        for version_dir in sorted(cvefixes_dir.iterdir(), reverse=True):
-            if version_dir.is_dir() and version_dir.name.startswith("CVEfixes_v"):
-                data_dir = version_dir / "Data"
-                if data_dir.exists():
-                    for sql_file in data_dir.glob("*.sql.gz"):
-                        sql_path = sql_file
+    for cvefixes_dir in possible_dirs:
+        if cvefixes_dir.exists():
+            # Look for CVEfixes_v*.*.*/Data/CVEfixes_v*.*.*.sql.gz
+            for version_dir in sorted(cvefixes_dir.iterdir(), reverse=True):
+                if version_dir.is_dir() and version_dir.name.startswith("CVEfixes_v"):
+                    data_dir = version_dir / "Data"
+                    if data_dir.exists():
+                        for sql_file in data_dir.glob("*.sql.gz"):
+                            # Skip hidden files (._*)
+                            if not sql_file.name.startswith('._'):
+                                sql_path = sql_file
+                                break
+                    if sql_path:
                         break
-                if sql_path:
-                    break
+            if sql_path:
+                break
 
     if not sql_path or not sql_path.exists():
         logger.warning("CVEfixes SQL dump not found, CVE extraction will be skipped")
@@ -302,32 +362,77 @@ def load_cvefixes_cve_mapping(cvefixes_root: Path) -> Dict[str, str]:
 
     logger.info(f"Loading CVE mapping from {sql_path}...")
 
+    # First pass: collect CVE IDs per commit
     commit_to_cves: Dict[str, Set[str]] = defaultdict(set)
+    # Second pass: collect CVE descriptions
+    cve_descriptions: Dict[str, str] = {}
+
     connection = sqlite3.connect(":memory:")
     cursor = connection.cursor()
 
     try:
         with gzip.open(sql_path, "rt", encoding="utf-8", errors="ignore") as handle:
             for line in handle:
+                # Parse fixes table: (cve_id, hash, repo_url)
                 if line.startswith("INSERT INTO fixes"):
-                    values = _split_sql_values(line[line.index("VALUES(") + 7:line.rfind(")")])
-                    if len(values) != 3:
+                    try:
+                        values = _split_sql_values(line[line.index("VALUES(") + 7:line.rfind(")")])
+                        if len(values) >= 2:
+                            cve_id = _evaluate_expression(cursor, values[0])
+                            commit_hash = _evaluate_expression(cursor, values[1])
+                            if commit_hash and cve_id:
+                                commit_to_cves[commit_hash].add(cve_id)
+                    except (ValueError, IndexError):
                         continue
-                    cve_id = _evaluate_expression(cursor, values[0])
-                    commit_hash = _evaluate_expression(cursor, values[1])
-                    if commit_hash and cve_id:
-                        commit_to_cves[commit_hash].add(cve_id)
+
+                # Parse cve table to get descriptions
+                # cve table columns: cve_id, published_date, last_modified_date, description, ...
+                # So description is the 4th column (index 3)
+                # Description is stored as JSON array: [{"lang": "en", "value": "..."}]
+                elif line.startswith("INSERT INTO cve"):
+                    try:
+                        values = _split_sql_values(line[line.index("VALUES(") + 7:line.rfind(")")])
+                        if len(values) >= 4:
+                            cve_id = _evaluate_expression(cursor, values[0])
+                            # description is the 4th column (index 3)
+                            description_raw = _evaluate_expression(cursor, values[3])
+                            if cve_id and description_raw:
+                                # Try to parse as JSON and extract English description
+                                # SQL dump may use single quotes, convert to double quotes for JSON
+                                try:
+                                    # Replace single quotes with double quotes for JSON parsing
+                                    description_json = description_raw.replace("'", '"')
+                                    desc_list = json.loads(description_json)
+                                    if isinstance(desc_list, list):
+                                        for desc in desc_list:
+                                            if isinstance(desc, dict) and desc.get('lang') == 'en':
+                                                cve_descriptions[cve_id] = desc.get('value', '')
+                                                break
+                                        else:
+                                            # No English description found, use first one
+                                            if desc_list and isinstance(desc_list[0], dict):
+                                                cve_descriptions[cve_id] = desc_list[0].get('value', '')
+                                    else:
+                                        cve_descriptions[cve_id] = description_raw
+                                except json.JSONDecodeError:
+                                    # Not JSON, use as-is
+                                    cve_descriptions[cve_id] = description_raw
+                    except (ValueError, IndexError):
+                        continue
     finally:
         connection.close()
 
-    # Convert to single CVE per commit (take the first one)
-    commit_to_cve = {
-        commit: sorted(cves)[0] if cves else None
-        for commit, cves in commit_to_cves.items()
-    }
+    # Convert to single CVE per commit with description
+    commit_to_cve_info: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
+    for commit, cves in commit_to_cves.items():
+        if cves:
+            primary_cve = sorted(cves)[0]
+            description = cve_descriptions.get(primary_cve)
+            commit_to_cve_info[commit] = (primary_cve, description)
 
-    logger.info(f"Loaded CVE mapping for {len(commit_to_cve)} commits")
-    return commit_to_cve
+    logger.info(f"Loaded CVE mapping for {len(commit_to_cve_info)} commits")
+    logger.info(f"Loaded descriptions for {len(cve_descriptions)} CVEs")
+    return commit_to_cve_info
 
 
 # ============================================================================
@@ -338,9 +443,10 @@ def read_standardized_csvs(
     standardized_dir: Path,
     cwe_to_cwd_mapping: Dict[str, List[str]],
     url_cache: Dict[str, Dict[str, any]],
-    commit_to_cve: Dict[str, str],
+    commit_to_cve_info: Dict[str, Tuple[Optional[str], Optional[str]]],
     validate_urls: bool = True,
-    github_token: Optional[str] = None
+    github_token: Optional[str] = None,
+    limit: int = 0
 ) -> Iterator[Tuple[str, str, Dict[str, Any]]]:
     """
     Stream and filter entries from standardized CSV files.
@@ -349,9 +455,10 @@ def read_standardized_csvs(
         standardized_dir: Directory containing standardized CSV files
         cwe_to_cwd_mapping: CWE to CWD mapping dictionary
         url_cache: URL validation cache
-        commit_to_cve: Commit hash to CVE ID mapping (from CVEfixes)
+        commit_to_cve_info: Commit hash to (CVE ID, description) mapping (from CVEfixes)
         validate_urls: Whether to validate GitHub URLs
         github_token: GitHub API token for authentication
+        limit: Maximum number of entries to yield (0 = unlimited)
 
     Yields tuples of (language, cwd, entry_dict)
     """
@@ -360,15 +467,14 @@ def read_standardized_csvs(
     total_read = 0
     filtered_language = 0
     filtered_cwe = 0
-    filtered_cwd = 0
     filtered_url = 0
     yielded = 0
 
     for csv_file in csv_files:
         dataset_name = csv_file.stem
 
-        # Skip crossvul and bigvul (already excluded from NORMALIZERS, but double-check)
-        if dataset_name in ('crossvul', 'bigvul'):
+        # Skip hidden files (starting with ._) and excluded datasets
+        if dataset_name.startswith('._') or dataset_name in ('crossvul', 'bigvul'):
             logger.info(f"Skipping excluded dataset: {dataset_name}")
             continue
 
@@ -406,12 +512,9 @@ def read_standardized_csvs(
                 normalized_cwe = cwe_list[0]
                 other_cwes = cwe_list[1:] if len(cwe_list) > 1 else []
 
-                # 4. Map primary CWE to CWD
+                # 4. Map primary CWE to CWD (can be None)
                 cwd = get_cwd_for_cwe(normalized_cwe, cwe_to_cwd_mapping)
-
-                if not cwd:
-                    filtered_cwd += 1
-                    continue
+                # Note: Don't filter by CWD here - we need all CWE entries for benchmark_cwe.json
 
                 # 5. Map other_CWEs to other_CWDs (exclude primary CWD)
                 other_cwds = []
@@ -435,37 +538,49 @@ def read_standardized_csvs(
                 benign_structure = extract_structure(code_after, normalized_lang)
                 vulnerable_structure = extract_structure(code_before, normalized_lang)
 
-                # 8. Extract CVE ID (if available from CVEfixes)
+                # 8. Extract diff lines (hunks with context)
+                benign_lines, vulnerable_lines = extract_diff_lines(code_before, code_after)
+
+                # 9. Extract CVE ID and description (if available from CVEfixes)
                 cve_id = None
+                review_message = None
                 if commit_url:
                     commit_hash = extract_commit_hash_from_url(commit_url)
                     if commit_hash:
-                        cve_id = commit_to_cve.get(commit_hash)
+                        cve_info = commit_to_cve_info.get(commit_hash)
+                        if cve_info:
+                            cve_id, review_message = cve_info
 
-                # 9. Build entry
+                # 10. Build entry
                 entry = {
                     'benign_code': {
                         'context': benign_structure['context'],
                         'class': benign_structure['class'],
                         'func': benign_structure['func'],
-                        'lines': []  # Empty for now
+                        'lines': benign_lines
                     },
                     'vulnerable_code': {
                         'context': vulnerable_structure['context'],
                         'class': vulnerable_structure['class'],
                         'func': vulnerable_structure['func'],
-                        'lines': []  # Empty for now
+                        'lines': vulnerable_lines
                     },
-                    'source': dataset_name,  # Original dataset name
+                    'source': dataset_name,
                     'commit_url': commit_url if commit_url else None,
+                    'review_message': review_message,
                     'CWE': normalized_cwe,
-                    'other_CWEs': other_cwes,  # Now populated from pipe-separated CWEs
-                    'other_CWDs': other_cwds,  # Now populated (excluding primary CWD)
-                    'CVE': cve_id  # CVE ID from CVEfixes (None if not available)
+                    'other_CWEs': other_cwes,
+                    'other_CWDs': other_cwds,
+                    'CVE': cve_id
                 }
 
                 yielded += 1
                 yield (normalized_lang, cwd, entry)
+
+                # Check limit
+                if limit > 0 and yielded >= limit:
+                    logger.info(f"Reached limit of {limit} entries, stopping...")
+                    return
 
                 # Log progress periodically
                 if total_read % 10000 == 0:
@@ -477,7 +592,6 @@ def read_standardized_csvs(
     logger.info(f"  Total read:           {total_read:,}")
     logger.info(f"  Filtered (language):  {filtered_language:,}")
     logger.info(f"  Filtered (CWE):       {filtered_cwe:,}")
-    logger.info(f"  Filtered (CWD):       {filtered_cwd:,}")
     logger.info(f"  Filtered (URL):       {filtered_url:,}")
     logger.info(f"  Final yielded:        {yielded:,}")
     logger.info(f"{'='*70}\n")
@@ -580,6 +694,44 @@ def cluster_and_select(
 
 
 # ============================================================================
+# Dual Format Output
+# ============================================================================
+
+def write_dual_outputs(
+    cwd_data: Dict[str, Dict[str, List[Dict[str, Any]]]],
+    cwe_data: Dict[str, Dict[str, List[Dict[str, Any]]]],
+    output_dir: Path,
+    cwd_filename: str = "benchmark_cwd.json",
+    cwe_filename: str = "benchmark_cwe.json"
+) -> None:
+    """
+    Write both CWD-grouped and CWE-grouped output files.
+
+    Args:
+        cwd_data: Data grouped by (language, CWD) - only entries with CWD mapping
+        cwe_data: Data grouped by (language, CWE) - all entries with valid CWE
+        output_dir: Output directory
+        cwd_filename: Filename for CWD-grouped output
+        cwe_filename: Filename for CWE-grouped output
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # CWD-grouped output: {language: {CWD: [entries]}}
+    cwd_path = output_dir / cwd_filename
+    logger.info(f"Writing CWD-grouped output to {cwd_path}...")
+    with open(cwd_path, 'w', encoding='utf-8') as f:
+        json.dump(cwd_data, f, indent=2, ensure_ascii=False)
+
+    # CWE-grouped output: {language: {CWE: [entries]}}
+    cwe_path = output_dir / cwe_filename
+    logger.info(f"Writing CWE-grouped output to {cwe_path}...")
+    with open(cwe_path, 'w', encoding='utf-8') as f:
+        json.dump(cwe_data, f, indent=2, ensure_ascii=False)
+
+    logger.info(f"Output files written to {output_dir}")
+
+
+# ============================================================================
 # Main Processing
 # ============================================================================
 
@@ -600,10 +752,16 @@ def main():
         help='Directory containing standardized CSV files'
     )
     parser.add_argument(
-        '--output',
+        '--output-dir',
         type=Path,
-        default=Path('benchmark_transformed.json'),
-        help='Output JSON file path'
+        default=Path('.'),
+        help='Output directory for benchmark files (default: current directory)'
+    )
+    parser.add_argument(
+        '--limit',
+        type=int,
+        default=0,
+        help='Limit number of entries to process (0 = unlimited, use 5 for preview)'
     )
     parser.add_argument(
         '--embeddings-cache',
@@ -670,9 +828,10 @@ def main():
     else:
         logger.info("CVE mapping not loaded (CVEfixes not available)")
 
-    # Stream and group entries by (language, CWD)
+    # Stream and group entries separately for CWD and CWE outputs
     logger.info("Streaming and filtering CSV files...")
-    grouped_entries = defaultdict(list)
+    cwd_entries = defaultdict(list)  # (language, cwd) -> entries (only with CWD mapping)
+    cwe_entries = defaultdict(list)  # (language, cwe) -> entries (all valid CWE)
 
     # Log GitHub token status
     if not args.skip_url_validation:
@@ -688,72 +847,88 @@ def main():
         url_cache,
         commit_to_cve,
         validate_urls=not args.skip_url_validation,
-        github_token=args.github_token
+        github_token=args.github_token,
+        limit=args.limit
     ):
-        grouped_entries[(language, cwd)].append(entry)
+        cwe = entry['CWE']
+        # All entries go to CWE output
+        cwe_entries[(language, cwe)].append(entry)
+        # Only entries with CWD mapping go to CWD output
+        if cwd:
+            cwd_entries[(language, cwd)].append(entry)
 
-    logger.info(f"Grouped into {len(grouped_entries)} (language, CWD) combinations")
+    logger.info(f"Grouped into {len(cwd_entries)} (language, CWD) combinations")
+    logger.info(f"Grouped into {len(cwe_entries)} (language, CWE) combinations")
 
     # Save URL cache
     if not args.skip_url_validation:
         logger.info("Saving URL validation cache...")
         save_url_cache(url_cache, args.url_cache)
 
-    # Apply clustering/sampling for large groups
-    logger.info("Applying clustering/sampling to large groups...")
-    final_data = defaultdict(lambda: defaultdict(list))
+    # Apply clustering/sampling for large groups (CWD data)
+    logger.info("Applying clustering/sampling to CWD groups...")
+    final_cwd_data = defaultdict(lambda: defaultdict(list))
 
-    for (language, cwd), entries in sorted(grouped_entries.items()):
-        logger.info(f"Processing {language} / {cwd}: {len(entries)} entries")
+    for (language, cwd), entries in sorted(cwd_entries.items()):
+        logger.info(f"Processing CWD {language} / {cwd}: {len(entries)} entries")
 
         if len(entries) > args.n:
-            # Need to cluster/sample
-            # Use the primary CWE from the first entry for embedding lookup
             primary_cwe = entries[0]['CWE']
             selected_entries = cluster_and_select(
                 entries, args.n, primary_cwe, args.embeddings_cache
             )
         else:
-            # Keep all entries
             selected_entries = entries
 
-        final_data[language][cwd] = selected_entries
+        final_cwd_data[language][cwd] = selected_entries
         logger.info(f"  Kept {len(selected_entries)} entries")
 
-    # Convert defaultdict to regular dict for JSON serialization
-    output_data = {
-        lang: dict(cwd_dict)
-        for lang, cwd_dict in final_data.items()
-    }
+    # Apply clustering/sampling for large groups (CWE data)
+    logger.info("Applying clustering/sampling to CWE groups...")
+    final_cwe_data = defaultdict(lambda: defaultdict(list))
 
-    # Write output as compact JSON
-    logger.info(f"Writing output to {args.output}...")
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    for (language, cwe), entries in sorted(cwe_entries.items()):
+        logger.info(f"Processing CWE {language} / {cwe}: {len(entries)} entries")
 
-    with open(args.output, 'w', encoding='utf-8') as f:
-        json.dump(output_data, f, separators=(',', ':'), ensure_ascii=False)
+        if len(entries) > args.n:
+            selected_entries = cluster_and_select(
+                entries, args.n, cwe, args.embeddings_cache
+            )
+        else:
+            selected_entries = entries
+
+        final_cwe_data[language][cwe] = selected_entries
+        logger.info(f"  Kept {len(selected_entries)} entries")
+
+    # Convert defaultdict to regular dict for output
+    cwd_output = {lang: dict(cwd_dict) for lang, cwd_dict in final_cwd_data.items()}
+    cwe_output = {lang: dict(cwe_dict) for lang, cwe_dict in final_cwe_data.items()}
+
+    # Write dual format outputs
+    write_dual_outputs(cwd_output, cwe_output, args.output_dir)
 
     # Print statistics
     logger.info(f"\n{'='*70}")
-    logger.info("Final Statistics:")
+    logger.info("Final Statistics (CWD):")
 
-    for language in sorted(output_data.keys()):
-        lang_data = output_data[language]
+    for language in sorted(cwd_output.keys()):
+        lang_data = cwd_output[language]
         total_entries = sum(len(entries) for entries in lang_data.values())
         logger.info(f"\n  Language: {language}")
         logger.info(f"    CWDs: {len(lang_data)}")
         logger.info(f"    Total entries: {total_entries}")
 
-        # Show top CWDs
-        cwd_counts = [(cwd, len(entries)) for cwd, entries in lang_data.items()]
-        cwd_counts.sort(key=lambda x: x[1], reverse=True)
+    logger.info(f"\nFinal Statistics (CWE):")
 
-        logger.info(f"    Top 10 CWDs:")
-        for cwd, count in cwd_counts[:10]:
-            logger.info(f"      {cwd}: {count}")
+    for language in sorted(cwe_output.keys()):
+        lang_data = cwe_output[language]
+        total_entries = sum(len(entries) for entries in lang_data.values())
+        logger.info(f"\n  Language: {language}")
+        logger.info(f"    CWEs: {len(lang_data)}")
+        logger.info(f"    Total entries: {total_entries}")
 
     logger.info(f"{'='*70}")
-    logger.info(f"Transformation complete! Output saved to: {args.output}")
+    logger.info(f"Transformation complete! Output saved to: {args.output_dir}")
 
 
 if __name__ == '__main__':

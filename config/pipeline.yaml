@@ -1,0 +1,97 @@
+# CodeVul Benchmark Pipeline Configuration
+
+# Pipeline processing configuration
+pipeline:
+  # Normalization step
+  normalize:
+    parallel: true
+    max_workers: 4
+
+  # Cleaning step (all mandatory)
+  clean:
+    language_filter:
+      allowed: ['c/c++', 'java']
+      normalize_mapping:
+        c: 'c/c++'
+        C: 'c/c++'
+        cpp: 'c/c++'
+        'c++': 'c/c++'
+        'C++': 'c/c++'
+        Cpp: 'c/c++'
+        CPP: 'c/c++'
+        'C/C++': 'c/c++'
+        java: 'java'
+        Java: 'java'
+        JAVA: 'java'
+
+    url_validator:
+      enabled: true
+      cache_enabled: true
+      timeout: 10
+      github_token_env: 'GITHUB_TOKEN'
+      retry_attempts: 3
+      retry_delay: 1
+
+    deduplicator:
+      method: 'signature'  # signature | hash
+      cross_dataset: true
+      signature_algorithm: 'sha256'
+
+    code_validator:
+      skip_empty: true
+      skip_identical: true
+      min_code_length: 10
+
+    cwe_validator:
+      reject_unknown: true
+      reject_invalid: true
+
+  # Transformation step
+  transform:
+    cwd_mapping_file: 'collect.json'
+
+    clustering:
+      max_samples_per_group: 300
+      method: 'kmeans'  # kmeans | stratified | random
+
+    url_validation:
+      enabled: false  # Set to true to validate GitHub URLs during transform
+      github_token_env: 'GITHUB_TOKEN'
+
+  # Sample generation
+  sample:
+    excluded_datasets: ['crossvul', 'bigvul']
+    samples_per_dataset: 1
+    selection_method: 'first'  # first | random | representative
+
+# Path configuration
+paths:
+  datasets: 'datasets'
+  results: 'results'
+  normalized: 'results/normalized'
+  cleaned: 'results/cleaned'
+  benchmark: 'results/benchmark'
+  samples: 'results/samples'
+  cache: 'results/cache'
+
+# Dataset configuration
+datasets:
+  active:
+    - cvefixes
+    - jacontebe
+    - juliet
+    - megavul
+    - msr
+    - primevul
+    - sven
+
+  excluded:
+    - crossvul
+    - bigvul
+
+# Logging configuration
+logging:
+  level: 'INFO'  # DEBUG | INFO | WARNING | ERROR
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  file: 'results/pipeline.log'
+  console: true

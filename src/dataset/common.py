@@ -15,8 +15,12 @@ from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 logger = logging.getLogger(__name__)
 
 SCHEMA: List[str] = ["cwe", "code_before", "code_after", "commit_url", "language"]
-CWE_PATTERN = re.compile(r"(?i)cwe[-_\\s]*(\\d+)")
-csv.field_size_limit(sys.maxsize)
+CWE_PATTERN = re.compile(r"(?i)cwe[-_\s]*(\d+)")
+# Set CSV field size limit (handle Windows C long overflow)
+try:
+    csv.field_size_limit(sys.maxsize)
+except OverflowError:
+    csv.field_size_limit(2147483647)  # Max C long on Windows
 
 
 def normalize_cwe(value: object) -> str:

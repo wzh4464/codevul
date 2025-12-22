@@ -6,23 +6,49 @@ dist/
 wheels/
 *.egg-info
 
-# data
+# Datasets (large files)
+datasets/
+!datasets/.gitkeep
+
+# Results/outputs
+results/
+!results/.gitkeep
+
+# Old directories (to be removed)
+benchmark/
+clean/
+standardized/
+review_cache/
+
+# Data files (general)
 *.json
 *.jsonl
 *.csv
 *.txt
 *.zip
+*.npy
+
+# Configuration exceptions (keep config files)
+!config/*.yaml
+!config/*.yml
 
 # Virtual environments
 .venv
-*.npy
+venv/
 .env
 
-# log
+# Logs
 *.log
 
-# plans
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Plans
 .cursor/plans/
 
-# yaml
-*.yaml
+# Test files
+test_*.py
+*_test.py
