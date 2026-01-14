@@ -9,7 +9,7 @@ try:
     import tree_sitter_c as tsc
     import tree_sitter_cpp as tscpp
     import tree_sitter_java as tsjava
-    from tree_sitter import Language, Parser, QueryCursor
+    from tree_sitter import Language, Parser, Query, QueryCursor
 except ImportError:
     raise ImportError(
         "tree-sitter packages are required for function counting. "
@@ -68,8 +68,8 @@ def count_functions_in_code(code: str, language: str) -> int:
         # Parse code
         tree = parser.parse(bytes(code, 'utf8'))
 
-        # Create query and cursor (2024 API)
-        query = lang_obj.query(query_str)
+        # Create query and cursor using new API
+        query = Query(lang_obj, query_str)
         cursor = QueryCursor(query)
 
         # Execute query using QueryCursor.captures()
@@ -82,7 +82,7 @@ def count_functions_in_code(code: str, language: str) -> int:
             for tag in captures:
                 function_count += len(captures[tag])
         else:
-            # Fallback for older formats
+            # Fallback for older formats (list of tuples)
             function_count = len(captures)
 
         logger.debug(
