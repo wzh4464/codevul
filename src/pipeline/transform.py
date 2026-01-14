@@ -59,6 +59,16 @@ def run_transform_step(
         url_config = config.get('url_validation', {})
         validate_urls = url_config.get('enabled', False)
 
+        # Extract filter config
+        filter_multiple_functions = config.get('filter_multiple_functions', False)
+        remove_comments_enabled = config.get('remove_comments', False)
+
+        # Prepare config for transformer
+        transform_config = {
+            'filter_multiple_functions': filter_multiple_functions,
+            'remove_comments': remove_comments_enabled
+        }
+
         # Run transformation
         stats = transform_to_benchmark(
             cleaned_dir=cleaned_dir,
@@ -69,7 +79,8 @@ def run_transform_step(
             max_samples_per_group=max_samples,
             clustering_method=method,
             validate_urls=validate_urls,
-            github_token=github_token
+            github_token=github_token,
+            config=transform_config
         )
 
         return TransformResult(

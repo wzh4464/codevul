@@ -50,6 +50,12 @@ pipeline:
   transform:
     cwd_mapping_file: 'collect.json'
 
+    # Filter samples with multiple functions
+    filter_multiple_functions: true  # Set to false to keep all samples
+
+    # Remove comments from code
+    remove_comments: true  # Set to false to keep comments
+
     clustering:
       max_samples_per_group: 300
       method: 'kmeans'  # kmeans | stratified | random

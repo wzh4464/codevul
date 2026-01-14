@@ -28,6 +28,9 @@ from .cve_extractor import (
     load_cvefixes_cve_mapping,
 )
 from .clustering import cluster_and_sample
+from .function_counter import is_single_function
+from .comment_remover import remove_comments
+from .review_cleaner import clean_review_message
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +41,8 @@ def read_cleaned_csvs(
     url_cache: Dict[str, Dict[str, any]],
     commit_to_cve: Dict[str, str],
     validate_urls: bool = False,
-    github_token: Optional[str] = None
+    github_token: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None
 ) -> Iterator[Tuple[str, str, Dict[str, Any]]]:
     """
     Stream and transform entries from cleaned CSV files.
@@ -50,16 +54,25 @@ def read_cleaned_csvs(
         commit_to_cve: Commit hash to CVE ID mapping
         validate_urls: Whether to validate GitHub URLs
         github_token: GitHub API token for authentication
+        config: Optional configuration dictionary (for filtering, etc.)
 
     Yields:
         Tuples of (language, cwd, entry_dict)
     """
+    # Extract config settings
+    if config is None:
+        config = {}
+
+    filter_multiple_functions = config.get('filter_multiple_functions', False)
+    remove_comments_enabled = config.get('remove_comments', False)
     csv_files = sorted(cleaned_dir.glob('*.csv'))
 
     total_read = 0
     filtered_cwe = 0
     filtered_cwd = 0
     filtered_url = 0
+    filtered_benign_multi_func = 0
+    filtered_vulnerable_multi_func = 0
     yielded = 0
 
     for csv_file in csv_files:
@@ -123,9 +136,36 @@ def read_cleaned_csvs(
                         continue
                     commit_url = commit_url_https
 
+                # Remove comments (if enabled)
+                if remove_comments_enabled:
+                    code_before = remove_comments(code_before, language)
+                    code_after = remove_comments(code_after, language)
+
                 # Extract code structures
                 benign_structure = extract_structure(code_after, language)
                 vulnerable_structure = extract_structure(code_before, language)
+
+                # Filter multiple functions (if enabled)
+                if filter_multiple_functions:
+                    # Check benign code - only filter if func was detected
+                    if benign_structure['func'] is not None:
+                        if not is_single_function(code_after, language):
+                            filtered_benign_multi_func += 1
+                            logger.debug(
+                                f"Filtered {dataset_name} entry (benign): "
+                                f"multiple functions detected"
+                            )
+                            continue
+
+                    # Check vulnerable code - only filter if func was detected
+                    if vulnerable_structure['func'] is not None:
+                        if not is_single_function(code_before, language):
+                            filtered_vulnerable_multi_func += 1
+                            logger.debug(
+                                f"Filtered {dataset_name} entry (vulnerable): "
+                                f"multiple functions detected"
+                            )
+                            continue
 
                 # Extract CVE ID (if available from CVEfixes)
                 cve_id = None
@@ -166,11 +206,16 @@ def read_cleaned_csvs(
     # Final statistics
     logger.info(f"\n{'='*70}")
     logger.info(f"Transformation Statistics:")
-    logger.info(f"  Total read:           {total_read:,}")
-    logger.info(f"  Filtered (CWE):       {filtered_cwe:,}")
-    logger.info(f"  Filtered (CWD):       {filtered_cwd:,}")
-    logger.info(f"  Filtered (URL):       {filtered_url:,}")
-    logger.info(f"  Final yielded:        {yielded:,}")
+    logger.info(f"  Total read:                    {total_read:,}")
+    logger.info(f"  Filtered (CWE):                {filtered_cwe:,}")
+    logger.info(f"  Filtered (CWD):                {filtered_cwd:,}")
+    logger.info(f"  Filtered (URL):                {filtered_url:,}")
+    if filter_multiple_functions:
+        logger.info(f"  Filtered (Multi-func benign):  {filtered_benign_multi_func:,}")
+        logger.info(f"  Filtered (Multi-func vuln):    {filtered_vulnerable_multi_func:,}")
+        total_multi_func = filtered_benign_multi_func + filtered_vulnerable_multi_func
+        logger.info(f"  Filtered (Multi-func total):   {total_multi_func:,}")
+    logger.info(f"  Final yielded:                 {yielded:,}")
     logger.info(f"{'='*70}\n")
 
 
@@ -183,7 +228,8 @@ def transform_to_benchmark(
     max_samples_per_group: int = 300,
     clustering_method: str = 'kmeans',
     validate_urls: bool = False,
-    github_token: Optional[str] = None
+    github_token: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Transform cleaned CSVs to benchmark JSON format.
@@ -198,10 +244,13 @@ def transform_to_benchmark(
         clustering_method: Clustering method ('kmeans' or 'stratified')
         validate_urls: Whether to validate GitHub URLs
         github_token: GitHub token for API authentication
+        config: Optional configuration dictionary (for filtering, etc.)
 
     Returns:
         Statistics dictionary
     """
+    if config is None:
+        config = {}
     # Load CWE to CWD mapping
     logger.info("Loading CWE to CWD mapping...")
     cwe_to_cwd_mapping = load_cwd_mapping(cwd_mapping_file)
@@ -239,7 +288,8 @@ def transform_to_benchmark(
         url_cache,
         commit_to_cve,
         validate_urls=validate_urls,
-        github_token=github_token
+        github_token=github_token,
+        config=config
     ):
         grouped_entries[(language, cwd)].append(entry)
 
