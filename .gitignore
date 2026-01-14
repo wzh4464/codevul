@@ -49,6 +49,19 @@ venv/
 # Plans
 .cursor/plans/
 
-# Test files
-test_*.py
-*_test.py
+# Test files (root level only, not in tests/)
+/test_*.py
+/*_test.py
+
+# Test outputs
+test_output/
+test_standardized/
+test_*.json
+benchmark_*_test.json
+
+# Output directories
+output_*/
+embeddings_cache/
+
+# Pytest cache
+.pytest_cache/
